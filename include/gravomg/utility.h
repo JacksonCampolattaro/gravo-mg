@@ -15,7 +15,7 @@
 using namespace std;
 
 namespace GravoMG {
-	void scaleMesh(Eigen::MatrixXd& V, const Eigen::MatrixXi& F, double scaleRatio = 1.0);
+    void scaleMesh(Eigen::MatrixXd &V, const Eigen::MatrixXi &F, double scaleRatio = 1.0);
 }
 
 #endif // !UTILITY_H
