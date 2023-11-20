@@ -2,85 +2,43 @@
 
 #include "gravomg/multigrid_solver.h"
 #include "gravomg/utility.h"
+#include "gravomg/sampling.h"
 
 #include <cmath>
 #include <numeric>
 #include <chrono>
 
 #include <Eigen/Eigenvalues>
+#include <utility>
 
 namespace GravoMG {
-    /* Constructor */
-    MultigridSolver::MultigridSolver(
-            Eigen::MatrixXd &V, Eigen::MatrixXi &neigh, Eigen::SparseMatrix<double> &M) :
-            V(V), neigh(neigh), M(M) {
-        Minv = (Eigen::SparseMatrix<double>) M.diagonal().cwiseInverse().asDiagonal();
 
-        V0 = V;
-        hierarchyTiming["n_vertices"] = V.rows();
-    }
+    void MultigridSolver::constructProlongation(
+            Eigen::MatrixXd points,
+            double ratio, bool nested, int lowBound,
+            Sampling samplingStrategy, Weighting weightingScheme,
+            bool verbose
+    ) {
 
-    /* ====================== BASIC FUNCTIONS  ======================= */
-    MultigridSolver::~MultigridSolver() {
-        // std::cout << "Deleting data!\n";
-        V.resize(0, 0);
-        V0.resize(0, 0);
-        neigh.resize(0, 0);
-        DoF.clear();
-        DoF.shrink_to_fit();
-        U.clear();
-        U.shrink_to_fit();
-        Abar.clear();
-        Abar.shrink_to_fit();
-        Mbar.clear();
-        Mbar.shrink_to_fit();
-        neighHierarchy.clear();
-        neighHierarchy.shrink_to_fit();
-        nearestSource.clear();
-        nearestSource.shrink_to_fit();
-        geodDistance.clear();
-        geodDistance.shrink_to_fit();
-        samples.clear();
-        samples.shrink_to_fit();
-        PointsToSampleMap.clear();
-        PointsToSampleMap.shrink_to_fit();
-    }
+        // Degrees of freedom per level
+        std::vector<size_t> DoF;
 
-    // Build the hierarchy
-    void MultigridSolver::buildHierarchy() {
-        nearestSource.clear();
-        nearestSource.shrink_to_fit();
+        // Nearest source for every given point (per level)
+        std::vector<std::vector<size_t>> nearestSource;
 
-        plf::nanotimer timer;
-        timer.start();
-        constructProlongation();
-        hierarchyTiming["hierarchy"] = timer.get_elapsed_ms();
-    }
-
-    void MultigridSolver::constructProlongation() {
         // Create prolongation operator for level k+1 to k
         // Points in current level
-        Eigen::MatrixXd levelPoints = V;
-        Eigen::MatrixXd levelNormals = normals;
-        // Points in coarser level
-        Eigen::MatrixXd samplePoints;
+        Eigen::MatrixXd levelPoints = std::move(points);
         // Neighborhood data structure
-        Eigen::MatrixXi neighLevelK = neigh;
+        Eigen::MatrixXi neighLevelK;
 
         // Compute initial radius
         double densityRatio = std::sqrt(ratio);
-        int nLevel1 = int(levelPoints.rows() / ratio);
+        int nLevel1 = int(double(levelPoints.rows()) / ratio);
 
         std::random_device rd;
         std::default_random_engine generator(rd());
 
-        hierarchyTiming["sampling"] = 0.0;
-        hierarchyTiming["cluster"] = 0.0;
-        hierarchyTiming["next_neighborhood"] = 0.0;
-        hierarchyTiming["next_positions"] = 0.0;
-        hierarchyTiming["triangle_finding"] = 0.0;
-        hierarchyTiming["triangle_selection"] = 0.0;
-        hierarchyTiming["levels"] = DoF.size() - 1.0;
         // For each level
         int k = 0;
         DoF.clear();
@@ -88,9 +46,9 @@ namespace GravoMG {
         DoF.push_back(levelPoints.rows());
         while (levelPoints.rows() > lowBound && k < 10) {
             double radius = std::cbrt(ratio) * computeAverageEdgeLength(levelPoints, neighLevelK);
-            // -- Setting up variables
+
             // Data structure for neighbors inside level k
-            std::vector<std::set<int>> neighborsList;
+            std::vector<std::set<int>> neighborsLists;
 
             // List of triplets to build prolongation operator U
             std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
@@ -98,7 +56,7 @@ namespace GravoMG {
             // The nearest coarse point for each fine point and the distances computed
             Eigen::VectorXd D(levelPoints.rows());
             D.setConstant(std::numeric_limits<double>::max());
-            nearestSource.push_back(std::vector<size_t>(levelPoints.rows()));
+            nearestSource.emplace_back(levelPoints.rows());
 
             // -- Sample a subset for level k + 1
             if (verbose) printf("__Constructing Prolongation Operator for level = %d using closest triangle. \n", k);
@@ -106,8 +64,6 @@ namespace GravoMG {
             // Sample points that will be part of the coarser level with Poisson disk sampling
             if (verbose) std::cout << "Obtaining subset from the finer level\n";
 
-            plf::nanotimer samplingTimer;
-            samplingTimer.start();
 
             switch (samplingStrategy) {
                 case FASTDISK:
@@ -122,8 +78,10 @@ namespace GravoMG {
                     samples[k].resize(DoF[k + 1]);
                     break;
                 case MIS:
-                    samples.push_back(
-                            maximumDeltaIndependentSet(levelPoints, neighLevelK, radius, D, nearestSource[k]));
+                    samples.push_back(maximumDeltaIndependentSet(
+                            levelPoints, neighLevelK,
+                            radius, D, nearestSource[k]
+                    ));
                     DoF.push_back(samples[k].size());
                     break;
             }
@@ -136,55 +94,43 @@ namespace GravoMG {
             if (verbose) cout << "Actual number found: " << samples[k].size() << endl;
             DoF[k + 1] = samples[k].size();
 
-            hierarchyTiming["sampling"] += samplingTimer.get_elapsed_ms();
-
-            plf::nanotimer clusterTimer;
-            clusterTimer.start();
-
-            // -- Compute distance from fine points to coarse points and get closest coarse point
+            // Compute distance from fine points to coarse points and get the closest coarse point
             // using distances from MIS if computed before
             constructDijkstraWithCluster(levelPoints, samples[k], neighLevelK, k, D,
                                          nearestSource[k]); // Stores result in nearestSource[k]
-            hierarchyTiming["cluster"] += clusterTimer.get_elapsed_ms();
-
-            plf::nanotimer nextNeighTimer;
-            nextNeighTimer.start();
 
             // Create neighborhood for the next level
-            neighborsList.resize(DoF[k + 1]);
+            neighborsLists.resize(DoF[k + 1]);
             for (int fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
                 for (int j = 0; j < neighLevelK.cols(); ++j) {
                     int neighIdx = neighLevelK(fineIdx, j);
                     if (neighIdx < 0) break;
                     if (nearestSource[k][fineIdx] != nearestSource[k][neighIdx]) {
-                        neighborsList[nearestSource[k][fineIdx]].insert(nearestSource[k][neighIdx]);
+                        neighborsLists[nearestSource[k][fineIdx]].insert(nearestSource[k][neighIdx]);
                     }
                 }
             }
 
-            // Store in homogeneous datastructure
-            int maxNeighNum = 0;
-            for (int i = 0; i < neighborsList.size(); ++i) {
-                if (neighborsList[i].size() > maxNeighNum) {
-                    maxNeighNum = neighborsList[i].size();
+            // Store in homogeneous data structure
+            std::size_t maxNeighNum = 0;
+            for (const auto & neighbors : neighborsLists) {
+                if (neighbors.size() > maxNeighNum) {
+                    maxNeighNum = neighbors.size();
                 }
             }
             neighLevelK.resize(DoF[k + 1], maxNeighNum);
             neighLevelK.setConstant(-1);
-            for (int i = 0; i < neighborsList.size(); ++i) {
+            for (int i = 0; i < neighborsLists.size(); ++i) {
                 neighLevelK(i, 0) = i;
                 int iCounter = 1;
-                for (int node: neighborsList[i]) {
+                for (int node: neighborsLists[i]) {
                     if (node == i) continue;
                     if (iCounter >= maxNeighNum) break;
                     neighLevelK(i, iCounter) = node;
                     iCounter++;
                 }
             }
-            hierarchyTiming["next_neighborhood"] += nextNeighTimer.get_elapsed_ms();
 
-            plf::nanotimer nextPosTimer;
-            nextPosTimer.start();
             if (verbose) std::cout << "Setting up the point locations for the next level\n";
 
             // Setting up the DoF for the next level
@@ -205,21 +151,17 @@ namespace GravoMG {
                 for (int coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
                     if (clusterSizes[coarseIdx] == 1) {
                         tempPoints.row(coarseIdx) = levelPoints.row(samples[k][coarseIdx]);
-                        for (int neighIdx: neighborsList[coarseIdx]) {
+                        for (int neighIdx: neighborsLists[coarseIdx]) {
                             tempPoints.row(coarseIdx) =
                                     tempPoints.row(coarseIdx) + levelPoints.row(samples[k][neighIdx]);
                         }
-                        tempPoints.row(coarseIdx) = tempPoints.row(coarseIdx) / (neighborsList[coarseIdx].size() + 1.);
+                        tempPoints.row(coarseIdx) = tempPoints.row(coarseIdx) / (neighborsLists[coarseIdx].size() + 1.);
                     } else {
                         tempPoints.row(coarseIdx) = tempPoints.row(coarseIdx) / clusterSizes[coarseIdx];
                     }
                 }
             }
-            if (debug) levelV.push_back(tempPoints);
-            hierarchyTiming["next_positions"] += nextPosTimer.get_elapsed_ms();
 
-            plf::nanotimer triangleFindingTimer;
-            triangleFindingTimer.start();
 
             // Create triangles for this level based on Voronoi cells
             std::vector<std::vector<int>> tris;
@@ -231,16 +173,16 @@ namespace GravoMG {
             for (int coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
                 // Iterate over delaunay triangles
                 int v2Idx, v3Idx;
-                for (auto it = neighborsList[coarseIdx].begin(); it != neighborsList[coarseIdx].end(); it++) {
+                for (auto it = neighborsLists[coarseIdx].begin(); it != neighborsLists[coarseIdx].end(); it++) {
                     v2Idx = *it;
                     // We iterate over the coarse indices in order,
                     // so if the neighboring idx is lower then the current coarseIdx,
                     // it must have been considered before and be part of a triangle.
                     if (v2Idx < coarseIdx) continue;
-                    for (auto it2 = std::next(it); it2 != neighborsList[coarseIdx].end(); it2++) {
+                    for (auto it2 = std::next(it); it2 != neighborsLists[coarseIdx].end(); it2++) {
                         v3Idx = *it2;
                         if (v3Idx < coarseIdx) continue;
-                        if (neighborsList[v2Idx].find(v3Idx) != neighborsList[v2Idx].end()) {
+                        if (neighborsLists[v2Idx].find(v3Idx) != neighborsLists[v2Idx].end()) {
                             tris.push_back({coarseIdx, v2Idx, v3Idx});
                             Eigen::RowVector3d e12 = tempPoints.row(v2Idx) - tempPoints.row(coarseIdx);
                             Eigen::RowVector3d e13 = tempPoints.row(v3Idx) - tempPoints.row(coarseIdx);
@@ -255,17 +197,12 @@ namespace GravoMG {
             }
             tris.shrink_to_fit();
             triNormals.shrink_to_fit();
-            if (debug) allTriangles.push_back(tris);
-            hierarchyTiming["triangle_finding"] += triangleFindingTimer.get_elapsed_ms();
 
-            plf::nanotimer triangleSelectionTimer;
-            triangleSelectionTimer.start();
 
             // Create local triangulation on each cluster (centralized at sample i)
             int notrisfound = 0;
             int edgesfound = 0;
             int fallbackCount = 0;
-            if (debug) noTriFoundMap.push_back(std::vector<int>(DoF[k]));
 
             for (int fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
                 Eigen::RowVector3d finePoint = levelPoints.row(fineIdx);
@@ -278,15 +215,15 @@ namespace GravoMG {
                     continue;
                 }
 
-                if (neighborsList[coarseIdx].empty()) {
+                if (neighborsLists[coarseIdx].empty()) {
                     // If the coarse point has no neighbors,
                     // set the weight to 1 for the coarse point.
                     // Note: this should not happen.
                     AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, 1.));
-                } else if (neighborsList[coarseIdx].size() == 1) {
+                } else if (neighborsLists[coarseIdx].size() == 1) {
                     // If the coarse point only has one neighbor, no triangle can be created.
                     // Thus, the weights are distributed w.r.t. the distance to each coarse point.
-                    int neighIdx = *neighborsList[coarseIdx].begin();
+                    int neighIdx = *neighborsLists[coarseIdx].begin();
                     Eigen::RowVector3d neighPoint = tempPoints.row(neighIdx);
 
                     // get the distance to the two neighboring centroids
@@ -429,10 +366,7 @@ namespace GravoMG {
                     }
                 }
             }
-            if (verbose) cout << "Number of triangles unfound: " << notrisfound << endl;
-            if (verbose) cout << "Number of edges found: " << edgesfound << endl;
             if (verbose) cout << "Percentage of fallback: " << (double) fallbackCount / (double) DoF[k] * 100 << endl;
-            hierarchyTiming["triangle_selection"] += triangleSelectionTimer.get_elapsed_ms();
 
             levelPoints = tempPoints;
 
@@ -446,9 +380,9 @@ namespace GravoMG {
         }
     }
 
-    double MultigridSolver::inTriangle(const Eigen::RowVector3d &p, const std::vector<int> &tri,
-                                       const Eigen::RowVector3d &triNormal, const Eigen::MatrixXd &pos,
-                                       Eigen::RowVector3d &bary, std::map<int, float> &insideEdge) {
+    double inTriangle(const Eigen::RowVector3d &p, const std::vector<int> &tri,
+                      const Eigen::RowVector3d &triNormal, const Eigen::MatrixXd &pos,
+                      Eigen::RowVector3d &bary, std::map<int, float> &insideEdge) {
         Eigen::RowVector3d v1, v2, v3;
         v1 = pos.row(tri[0]);
         v2 = pos.row(tri[1]);
@@ -485,14 +419,14 @@ namespace GravoMG {
         return -1.;
     }
 
-    std::vector<double> MultigridSolver::uniformWeights(const int &n_points) {
+    std::vector<double> uniformWeights(const int &n_points) {
         std::vector<double> weights(n_points);
         std::fill(weights.begin(), weights.end(), 1. / n_points);
         return weights;
     }
 
-    std::vector<double> MultigridSolver::inverseDistanceWeights(const Eigen::MatrixXd &pos, const Eigen::RowVector3d &p,
-                                                                const std::vector<int> &edges) {
+    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd &pos, const Eigen::RowVector3d &p,
+                                               const std::vector<int> &edges) {
         double sumWeight = 0.;
         std::vector<double> weights(edges.size());
         for (int j = 0; j < edges.size(); ++j) {
@@ -505,7 +439,7 @@ namespace GravoMG {
         return weights;
     }
 
-    double MultigridSolver::computeAverageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh) {
+    double computeAverageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh) {
         double sumLength = 0;
         int nEdges = 0;
         for (int i = 0; i < pos.rows(); ++i) {
@@ -523,99 +457,9 @@ namespace GravoMG {
         return sumLength / (double) nEdges;
     }
 
-    std::vector<int>
-    MultigridSolver::maximumDeltaIndependentSet(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges,
-                                                const double &radius) {
-        std::vector<bool> visited(edges.rows());
-        std::vector<int> selection;
-        for (int i = 0; i < edges.rows(); ++i) {
-            if (!visited[i]) {
-                selection.push_back(i);
-                for (int j = 0; j < edges.cols(); ++j) {
-                    int neighIdx = edges(i, j);
-                    if (neighIdx < 0) break;
-                    double dist = (pos.row(i) - pos.row(neighIdx)).norm();
-                    if (dist < radius) {
-                        visited[neighIdx] = true;
-                    }
-                }
-            }
-        }
-        return selection;
-    }
-
-    std::vector<int>
-    MultigridSolver::maximumDeltaIndependentSet(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges,
-                                                const double &radius, Eigen::VectorXd &D,
-                                                std::vector<size_t> &nearestSourceK) {
-        std::vector<bool> visited(edges.rows());
-        std::vector<int> selection;
-        int sampleIdx = 0;
-        for (int i = 0; i < edges.rows(); ++i) {
-            if (!visited[i]) {
-                selection.push_back(i);
-                nearestSourceK[i] = sampleIdx;
-                for (int j = 0; j < edges.cols(); ++j) {
-                    int neighIdx = edges(i, j);
-                    if (neighIdx < 0) break;
-                    double dist = (pos.row(i) - pos.row(neighIdx)).norm();
-                    if (dist < radius) {
-                        visited[neighIdx] = true;
-                        if (dist < D(neighIdx)) {
-                            D(neighIdx) = dist;
-                            nearestSourceK[neighIdx] = sampleIdx;
-                        }
-                    }
-                }
-                ++sampleIdx;
-            }
-        }
-        return selection;
-    }
-
-    std::vector<int>
-    MultigridSolver::fastDiskSample(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius,
-                                    Eigen::VectorXd &D, std::vector<size_t> &nearestSourceK) {
-        std::vector<bool> visited(edges.rows());
-        std::vector<int> selection;
-        int sampleIdx = 0;
-        for (int i = 0; i < edges.rows(); ++i) {
-            if (!visited[i]) {
-                selection.push_back(i);
-                nearestSourceK[i] = sampleIdx;
-                for (int j = 0; j < edges.cols(); ++j) {
-                    int neighIdx = edges(i, j);
-                    if (neighIdx < 0) break;
-                    double dist = (pos.row(i) - pos.row(neighIdx)).norm();
-                    if (dist < radius) {
-                        visited[neighIdx] = true;
-                        if (dist < D(neighIdx)) {
-                            D(neighIdx) = dist;
-                            nearestSourceK[neighIdx] = sampleIdx;
-                        }
-                        for (int j2 = 0; j2 < edges.cols(); ++j2) {
-                            int neighIdx2 = edges(neighIdx, j2);
-                            if (neighIdx2 < 0) break;
-                            double dist2 = dist + (pos.row(neighIdx) - pos.row(neighIdx2)).norm();
-                            if (dist2 < radius) {
-                                visited[neighIdx2] = true;
-                                if (dist2 < D(neighIdx2)) {
-                                    D(neighIdx2) = dist2;
-                                    nearestSourceK[neighIdx2] = sampleIdx;
-                                }
-                            }
-                        }
-                    }
-                }
-                ++sampleIdx;
-            }
-        }
-        return selection;
-    }
-
-    void MultigridSolver::constructDijkstraWithCluster(const Eigen::MatrixXd &points, const std::vector<int> &source,
-                                                       const Eigen::MatrixXi &neigh, int k, Eigen::VectorXd &D,
-                                                       std::vector<size_t> &nearestSourceK) {
+    void constructDijkstraWithCluster(const Eigen::MatrixXd &points, const std::vector<int> &source,
+                                      const Eigen::MatrixXi &neigh, int k, Eigen::VectorXd &D,
+                                      std::vector<size_t> &nearestSourceK) {
         std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<VertexPair>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
 
@@ -657,307 +501,6 @@ namespace GravoMG {
         }
     }
 
-
-    double
-    MultigridSolver::multiGridVCycleGS(Eigen::SparseMatrix<double> &A, Eigen::MatrixXd &b, Eigen::MatrixXd &x, int k,
-                                       bool isDebug) {
-        double tolPre = 1e-15, tolPost = 1e-15;
-        //[1] Smoothing
-        GaussSeidelSmoother(A, b, x, preIters, tolPre, isDebug);
-
-        //[2] Residual
-        Eigen::MatrixXd res = b - A * x;
-
-        //[3] Restriction
-        Eigen::MatrixXd resRest = U[k].transpose() * res;
-
-        //[4] Recursion
-        Eigen::MatrixXd eps;
-        eps.setZero(resRest.rows(), resRest.cols());
-        if (k == U.size() - 1) {
-            eps = coarsestSolver.solve(resRest);
-        } else {
-            multiGridVCycleGS(Abar[k + 1], resRest, eps, k + 1, isDebug);
-        }
-
-        //[5] Prolongation
-        x = x + U[k] * eps;
-
-        //[6] Post-Smoothing
-        GaussSeidelSmoother(A, b, x, postIters, tolPost, isDebug);
-
-        return 0.0;
-    }
-
-    //!< Perform Multigrid using F-Cycle and Gauss-Seidel smoothing
-    double
-    MultigridSolver::multiGridFCycleGS(Eigen::SparseMatrix<double> &A, Eigen::MatrixXd &b, Eigen::MatrixXd &x, int k,
-                                       bool isDebug) {
-        double tolPre = 1e-15, tolPost = 1e-15;
-        //[1] Smoothing
-        GaussSeidelSmoother(A, b, x, preIters, tolPre, isDebug);
-
-        //[2] Residual
-        Eigen::MatrixXd res = b - A * x;
-
-        //[3] Restriction
-        Eigen::MatrixXd resRest = U[k].transpose() * res;
-
-        //[4] Recursion
-        Eigen::MatrixXd eps;
-        eps.setZero(resRest.rows(), resRest.cols());
-        if (k == U.size() - 1) {
-            eps = coarsestSolver.solve(resRest);
-        } else {
-            multiGridFCycleGS(Abar[k + 1], resRest, eps, k + 1, isDebug);
-        }
-
-        //[5] Prolongation
-        x = x + U[k] * eps;
-
-        //[6] Post-Smoothing
-        GaussSeidelSmoother(A, b, x, postIters, tolPost, isDebug);
-
-        //[7] Residual
-        res = b - A * x;
-
-        //[8] Restriction
-        resRest = U[k].transpose() * res;
-
-        //[9] Recursion
-        if (k == DoF.size() - 2) {
-            eps = coarsestSolver.solve(resRest);
-        } else {
-            multiGridVCycleGS(Abar[k + 1], resRest, eps, k + 1, isDebug);
-        }
-
-        //[10] Prolongation
-        x = x + U[k] * eps;
-
-        //[11] Post-Smoothing
-        GaussSeidelSmoother(A, b, x, postIters, tolPost, isDebug);
-
-        return 0.0;
-    }
-
-    //!< Perform Multigrid using W-Cycle and Gauss-Seidel smoothing
-    double
-    MultigridSolver::multiGridWCycleGS(Eigen::SparseMatrix<double> &A, Eigen::MatrixXd &b, Eigen::MatrixXd &x, int k,
-                                       bool isDebug) {
-        double tolPre = 1e-15, tolPost = 1e-15;
-        //[1] Smoothing
-        GaussSeidelSmoother(A, b, x, preIters, tolPre, isDebug);
-
-        //[2] Residual
-        Eigen::MatrixXd res = b - A * x;
-
-        //[3] Restriction
-        Eigen::MatrixXd resRest = U[k].transpose() * res;
-
-        //[4] Recursion
-        Eigen::MatrixXd eps;
-        eps.setZero(resRest.rows(), resRest.cols());
-        if (k == U.size() - 1) {
-            eps = coarsestSolver.solve(resRest);
-        } else {
-            multiGridWCycleGS(Abar[k + 1], resRest, eps, k + 1, isDebug);
-        }
-
-        //[5] Prolongation
-        x = x + U[k] * eps;
-
-        //[6] Post-Smoothing
-        GaussSeidelSmoother(A, b, x, postIters, tolPost, isDebug);
-
-        //[7] Residual
-        res = b - A * x;
-
-        //[8] Restriction
-        resRest = U[k].transpose() * res;
-
-        //[9] Recursion
-        if (k == DoF.size() - 2) {
-            eps = coarsestSolver.solve(resRest);
-        } else {
-            multiGridWCycleGS(Abar[k + 1], resRest, eps, k + 1, isDebug);
-        }
-
-        //[10] Prolongation
-        x = x + U[k] * eps;
-
-        //[11] Post-Smoothing
-        GaussSeidelSmoother(A, b, x, postIters, tolPost, isDebug);
-
-        return 0.0;
-    }
-
-    void MultigridSolver::GaussSeidelSmoother(Eigen::SparseMatrix<double> &LHS, Eigen::MatrixXd &rhs,
-                                              Eigen::MatrixXd &x, int maxIter, double tol, bool isDebug) {
-        int dim = x.cols();
-        if (dim == 1) {
-            for (int i = 0; i < maxIter; i++) {
-                for (int k = 0; k < LHS.outerSize(); ++k) {
-                    double sum = 0.0;
-                    for (Eigen::SparseMatrix<double>::InnerIterator it(LHS, k); it; ++it) {
-                        if (it.row() != k) {
-                            sum += it.value() * x(it.row());
-                        }
-                    }
-                    x(k) = (rhs(k) - sum) / LHS.coeffRef(k, k);
-                }
-            }
-        } else {
-            for (int i = 0; i < maxIter; i++) {
-                for (int iCol = 0; iCol < dim; ++iCol) {
-                    for (int k = 0; k < LHS.outerSize(); ++k) {
-                        double sum = 0.0;
-                        for (Eigen::SparseMatrix<double>::InnerIterator it(LHS, k); it; ++it) {
-                            if (it.row() != k) {
-                                sum += it.value() * x(it.row(), iCol);
-                            }
-                        }
-                        x(k, iCol) = (rhs(k, iCol) - sum) / LHS.coeffRef(k, k);
-                    }
-                }
-            }
-        }
-    }
-
-    double MultigridSolver::residualCheck(const Eigen::SparseMatrix<double> &A, const Eigen::MatrixXd &b,
-                                          const Eigen::MatrixXd &x, int type) {
-        // 0: rel. norm (||Ax-b||/||b||)		1: L2 M^-1 (||Ax-b||_{M-1}/||b||_{M-1})		2: L2 M (||Ax-b||{M}/||b||_{M})		3: Abs (Ax-b).norm()
-        double residue;
-        switch (type) {
-            case 0: {
-                Eigen::VectorXd absResidue(b.cols());
-                for (int i = 0; i < b.cols(); ++i) {
-                    absResidue(i) = (A * x.col(i) - b.col(i)).norm() / b.col(i).norm();
-                }
-                residue = absResidue.maxCoeff();
-                break;
-            }
-            case 1: {
-                Eigen::VectorXd absResidue(b.cols());
-                Eigen::VectorXd residual;
-                for (int i = 0; i < b.cols(); ++i) {
-                    residual = A * x.col(i) - b.col(i);
-                    double n1 = residual.transpose() * Minv * residual;
-                    double n2 = b.col(i).transpose() * Minv * b.col(i);
-                    absResidue(i) = sqrt(n1 / n2);
-                }
-                residue = absResidue.maxCoeff();
-                break;
-            }
-            case 2: {
-                Eigen::VectorXd absResidue(b.cols());
-                Eigen::VectorXd residual;
-                for (int i = 0; i < b.cols(); ++i) {
-                    residual = A * x.col(i) - b.col(i);
-                    double n1 = residual.transpose() * M * residual;
-                    double n2 = b.col(i).transpose() * M * b.col(i);
-                    absResidue(i) = sqrt(n1 / n2);
-                }
-                residue = absResidue.maxCoeff();
-                break;
-            }
-            case 3:
-                residue = (A * x - b).norm();
-                break;
-            default:
-                break;
-        }
-
-        return residue;
-    }
-
-    void MultigridSolver::solve(Eigen::SparseMatrix<double> &LHS, Eigen::MatrixXd &rhs, Eigen::MatrixXd &x) {
-        std::chrono::high_resolution_clock::time_point t0, t1, t2;
-        std::chrono::duration<double> duration1, duration2;
-        convergence.reserve(maxIter);
-
-        Eigen::MatrixXd mx = rhs;
-
-        if (verbose) std::cout << "Solve the linear system using Gravo MG solver \n";
-
-        double residue = std::numeric_limits<double>::max();
-        Eigen::VectorXd rhs0;
-        Eigen::VectorXd rhs1;
-        Eigen::VectorXd rhs2;
-        rhs0 = mx.col(0);
-        if (mx.cols() > 1) {
-            rhs1 = mx.col(1);
-            rhs2 = mx.col(2);
-        }
-
-        if (isSmootherGaussSeidel) {
-            plf::nanotimer solverTotalTimer, reductionTimer;
-            solverTotalTimer.start();
-            reductionTimer.start();
-
-            if (verbose) cout << "Reducing system" << endl;
-
-            Abar.resize(U.size() + 1);
-            //Mbar.resize(DoF.size());
-            Abar[1] = U[0].transpose() * LHS * U[0];
-            for (int k = 2; k < U.size() + 1; ++k) {
-                Abar[k] = U[k - 1].transpose() * Abar[k - 1] * U[k - 1];
-            }
-
-            solverTiming["reduction"] = reductionTimer.get_elapsed_ms();
-
-            plf::nanotimer coarseSolveTimer;
-            coarseSolveTimer.start();
-
-            if (verbose) cout << "Solving reduced system" << endl;
-
-            coarsestSolver.compute(Abar[U.size()]);
-
-            solverTiming["coarsest_solve"] = coarseSolveTimer.get_elapsed_ms();
-
-            plf::nanotimer cyclesTimer;
-            cyclesTimer.start();
-            int iterCount = 0;
-            if (cycleType == 0) {
-                if (verbose) std::cout << "V-CYCLE \n";
-                Eigen::Vector3d relResidue;
-                do {
-                    residue = multiGridVCycleGS(LHS, mx, x, 0, false);
-                    residue = residualCheck(LHS, mx, x, stoppingCriteria);
-                    convergence.push_back({cyclesTimer.get_elapsed_ms(), residue});
-                    if (verbose) printf("%d,%f,%.14f \n", ++iterCount, cyclesTimer.get_elapsed_ms(), residue);
-                    else ++iterCount;
-                } while ((residue > accuracy) && (iterCount < maxIter));
-                convergence.shrink_to_fit();
-            } else if (cycleType == 1) {
-                if (verbose) std::cout << "F-CYCLE \n";
-                Eigen::Vector3d relResidue;
-                do {
-                    residue = multiGridFCycleGS(LHS, mx, x, 0, false);
-                    residue = residualCheck(LHS, mx, x, stoppingCriteria);
-                    if (verbose) printf("Iteration %d: residue=%.10f \n", ++iterCount, residue);
-                    else ++iterCount;
-                } while ((residue > accuracy) && (iterCount < maxIter));
-            } else if (cycleType == 2) {
-                if (verbose) std::cout << "W-CYCLE \n";
-                Eigen::Vector3d relResidue;
-                do {
-                    residue = multiGridWCycleGS(LHS, mx, x, 0, false);
-                    residue = residualCheck(LHS, mx, x, stoppingCriteria);
-                    if (verbose) printf("Iteration %d: residue=%.10f \n", ++iterCount, residue);
-                    else ++iterCount;
-                } while ((residue > accuracy) && (iterCount < maxIter));
-            } else {
-                if (verbose) std::cout << "ERROR! The cycle type should only be 0-2! \n";
-                return;
-            }
-
-            solverTiming["cycles"] = cyclesTimer.get_elapsed_ms();
-            solverTiming["solver_total"] = solverTotalTimer.get_elapsed_ms();
-            solverTiming["iterations"] = iterCount * 1.0;
-            solverTiming["residue"] = residue;
-        }
-
-    }
 
 }
 

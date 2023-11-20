@@ -35,11 +35,13 @@ endif ()
 SET(SRC_FILES
         src/multigrid_solver.cpp
         src/utility.cpp
+        src/sampling.cpp
 )
 
 SET(HEADER_FILES
         include/gravomg/multigrid_solver.h
         include/gravomg/utility.h
+        include/gravomg/sampling.h
 )
 
 add_library(gravomg ${SRC_FILES} ${HEADER_FILES})
