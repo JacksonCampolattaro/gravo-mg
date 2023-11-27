@@ -26,9 +26,11 @@ namespace GravoMG {
         return selection;
     }
 
-    std::vector<int> maximumDeltaIndependentSet(
-            const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges,
-            const double &radius, Eigen::VectorXd &D,
+    std::vector<int> maximumDeltaIndependentSetWithDistances(
+            const Eigen::MatrixXd &pos,
+            const Eigen::MatrixXi &edges,
+            const double &radius,
+            Eigen::VectorXd &D,
             std::vector<size_t> &nearestSourceK
     ) {
         std::vector<bool> visited(edges.rows());

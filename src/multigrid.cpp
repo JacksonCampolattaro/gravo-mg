@@ -94,7 +94,7 @@ namespace GravoMG {
                     samples[k].resize(DoF[k + 1]);
                     break;
                 case MIS:
-                    samples.push_back(maximumDeltaIndependentSet(
+                    samples.push_back(maximumDeltaIndependentSetWithDistances(
                             levelPoints, neighLevelK,
                             radius, D, nearestSource[k]
                     ));
