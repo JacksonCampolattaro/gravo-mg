@@ -33,13 +33,13 @@ endif ()
 
 # Add your project files
 SET(SRC_FILES
-        src/multigrid_solver.cpp
+        src/multigrid.cpp
         src/utility.cpp
         src/sampling.cpp
 )
 
 SET(HEADER_FILES
-        include/gravomg/multigrid_solver.h
+        include/gravomg/multigrid.h
         include/gravomg/utility.h
         include/gravomg/sampling.h
 )

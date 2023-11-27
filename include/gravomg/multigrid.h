@@ -52,21 +52,19 @@ namespace GravoMG {
             std::vector<size_t> &nearestSourceK
     );
 
-    class MultigridSolver {
-    public:
+    Eigen::SparseMatrix<double> constructProlongation(
+            Eigen::MatrixXd points,
+            double ratio = 8.0, bool nested = false, int lowBound = 1000,
+            Sampling samplingStrategy = FASTDISK, Weighting weightingScheme = BARYCENTRIC,
+            bool verbose = false
+    );
 
-        void constructProlongation(
-                Eigen::MatrixXd points,
-                double ratio = 8.0, bool nested = false, int lowBound = 1000,
-                Sampling samplingStrategy = FASTDISK, Weighting weightingScheme = BARYCENTRIC,
-                bool verbose = false
-        );
-
-        /* Hierarchy data*/
-        std::vector<Eigen::SparseMatrix<double>> U;                                //!< Prolongation operators
-        std::vector<std::vector<int>> samples;
-
-    };
+    std::vector<Eigen::SparseMatrix<double>> constructProlongations(
+            Eigen::MatrixXd points,
+            double ratio = 8.0, bool nested = false, int lowBound = 1000,
+            Sampling samplingStrategy = FASTDISK, Weighting weightingScheme = BARYCENTRIC,
+            bool verbose = false
+    );
 
 
 }

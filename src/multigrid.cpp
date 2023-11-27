@@ -1,6 +1,6 @@
 #define _USE_MATH_DEFINES
 
-#include "gravomg/multigrid_solver.h"
+#include "gravomg/multigrid.h"
 #include "gravomg/utility.h"
 #include "gravomg/sampling.h"
 
@@ -13,15 +13,31 @@
 
 namespace GravoMG {
 
-    void MultigridSolver::constructProlongation(
+    Eigen::SparseMatrix<double> constructProlongation(
             Eigen::MatrixXd points,
             double ratio, bool nested, int lowBound,
             Sampling samplingStrategy, Weighting weightingScheme,
             bool verbose
     ) {
+        // todo
+        return {};
+    }
+
+
+    std::vector<Eigen::SparseMatrix<double>> constructProlongations(
+            Eigen::MatrixXd points,
+            double ratio, bool nested, int lowBound,
+            Sampling samplingStrategy, Weighting weightingScheme,
+            bool verbose
+    ) {
+        // Prolongation operators
+        std::vector<Eigen::SparseMatrix<double>> U;
 
         // Degrees of freedom per level
         std::vector<size_t> DoF;
+
+        // Sampled points (per level)
+        std::vector<std::vector<int>> samples;
 
         // Nearest source for every given point (per level)
         std::vector<std::vector<size_t>> nearestSource;
@@ -113,7 +129,7 @@ namespace GravoMG {
 
             // Store in homogeneous data structure
             std::size_t maxNeighNum = 0;
-            for (const auto & neighbors : neighborsLists) {
+            for (const auto &neighbors: neighborsLists) {
                 if (neighbors.size() > maxNeighNum) {
                     maxNeighNum = neighbors.size();
                 }
@@ -378,6 +394,8 @@ namespace GravoMG {
             AllTriplet.shrink_to_fit();
             ++k;
         }
+
+        return U;
     }
 
     double inTriangle(const Eigen::RowVector3d &p, const std::vector<int> &tri,
