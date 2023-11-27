@@ -18,8 +18,7 @@ namespace GravoMG {
             Eigen::VectorXd &D, std::vector<size_t> &nearestSourceK
     );
 
-    std::vector<int> fastDiskSample(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius,
-                                    Eigen::VectorXd &D, std::vector<size_t> &nearestSourceK);
+    std::vector<int> fastDiskSample(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius);
 }
 
 #endif //GRAVOMG_SAMPLING_H

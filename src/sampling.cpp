@@ -59,9 +59,13 @@ namespace GravoMG {
     }
 
     std::vector<int> fastDiskSample(
-            const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius,
-            Eigen::VectorXd &D, std::vector<size_t> &nearestSourceK
+            const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius
     ) {
+
+        // todo: in the future it might make sense to return these!
+        Eigen::VectorXd D;
+        std::vector<size_t> nearestSourceK;
+
         std::vector<bool> visited(edges.rows());
         std::vector<int> selection;
         int sampleIdx = 0;

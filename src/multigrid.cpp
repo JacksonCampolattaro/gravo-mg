@@ -83,7 +83,7 @@ namespace GravoMG {
 
             switch (samplingStrategy) {
                 case FASTDISK:
-                    samples.push_back(fastDiskSample(levelPoints, neighLevelK, radius, D, nearestSource[k]));
+                    samples.push_back(fastDiskSample(levelPoints, neighLevelK, radius));
                     DoF.push_back(samples[k].size());
                     break;
                 case RANDOM:
