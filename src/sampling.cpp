@@ -1,6 +1,8 @@
 
 #include "gravomg/sampling.h"
 
+#include <iostream>
+
 namespace GravoMG {
 
     std::vector<int> maximumDeltaIndependentSet(
@@ -63,11 +65,11 @@ namespace GravoMG {
     ) {
 
         // todo: in the future it might make sense to return these!
-        Eigen::VectorXd D;
-        std::vector<size_t> nearestSourceK;
+        Eigen::VectorXd D(edges.rows());
+        std::vector<size_t> nearestSourceK(edges.rows());
 
         std::vector<bool> visited(edges.rows());
-        std::vector<int> selection;
+        std::vector<int> selection{};
         int sampleIdx = 0;
         for (int i = 0; i < edges.rows(); ++i) {
             if (!visited[i]) {
