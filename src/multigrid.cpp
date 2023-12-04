@@ -13,6 +13,25 @@
 
 namespace GravoMG {
 
+    double averageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh) {
+        double sumLength = 0;
+        int nEdges = 0;
+        for (int i = 0; i < pos.rows(); ++i) {
+            Eigen::Vector3d p1 = pos.row(i);
+            for (int j = 0; j < neigh.cols(); ++j) {
+                if (neigh(i, j) < 0) continue;
+                Eigen::Vector3d p2 = pos.row(neigh(i, j));
+                double dist = (p1 - p2).norm();
+                if (dist > 0) {
+                    sumLength += dist;
+                    ++nEdges;
+                }
+            }
+        }
+        return sumLength / (double) nEdges;
+    }
+
+
     Eigen::SparseMatrix<double> constructProlongation(
             Eigen::MatrixXd points,
             double ratio, bool nested, int lowBound,
@@ -61,7 +80,7 @@ namespace GravoMG {
         DoF.shrink_to_fit();
         DoF.push_back(levelPoints.rows());
         while (levelPoints.rows() > lowBound && k < 10) {
-            double radius = std::cbrt(ratio) * computeAverageEdgeLength(levelPoints, neighLevelK);
+            double radius = std::cbrt(ratio) * averageEdgeLength(levelPoints, neighLevelK);
 
             // Data structure for neighbors inside level k
             std::vector<std::set<int>> neighborsLists;
@@ -83,7 +102,7 @@ namespace GravoMG {
 
             switch (samplingStrategy) {
                 case FASTDISK:
-                    samples.push_back(fastDiskSample(levelPoints, neighLevelK, radius));
+                    samples.push_back(fastDiscSample(levelPoints, neighLevelK, radius));
                     DoF.push_back(samples[k].size());
                     break;
                 case RANDOM:
@@ -455,24 +474,6 @@ namespace GravoMG {
             weights[j] = weights[j] / sumWeight;
         }
         return weights;
-    }
-
-    double computeAverageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh) {
-        double sumLength = 0;
-        int nEdges = 0;
-        for (int i = 0; i < pos.rows(); ++i) {
-            Eigen::Vector3d p1 = pos.row(i);
-            for (int j = 0; j < neigh.cols(); ++j) {
-                if (neigh(i, j) < 0) continue;
-                Eigen::Vector3d p2 = pos.row(neigh(i, j));
-                double dist = (p1 - p2).norm();
-                if (dist > 0) {
-                    sumLength += dist;
-                    ++nEdges;
-                }
-            }
-        }
-        return sumLength / (double) nEdges;
     }
 
     void constructDijkstraWithCluster(const Eigen::MatrixXd &points, const std::vector<int> &source,

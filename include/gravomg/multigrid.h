@@ -33,8 +33,6 @@ enum Weighting {
 namespace GravoMG {
 
 
-    static double computeAverageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh);
-
     static double inTriangle(
             const Eigen::RowVector3d &p, const std::vector<int> &tri, const Eigen::RowVector3d &triNormal,
             const Eigen::MatrixXd &pos, Eigen::RowVector3d &bary, std::map<int, float> &insideEdge
@@ -51,6 +49,8 @@ namespace GravoMG {
             const Eigen::MatrixXi &neigh, int k, Eigen::VectorXd &D,
             std::vector<size_t> &nearestSourceK
     );
+
+    double averageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh);
 
     Eigen::SparseMatrix<double> constructProlongation(
             Eigen::MatrixXd points,
