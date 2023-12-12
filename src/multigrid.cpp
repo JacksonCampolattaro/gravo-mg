@@ -34,10 +34,24 @@ namespace GravoMG {
 
     Eigen::SparseMatrix<double> constructProlongation(
             Eigen::MatrixXd points,
-            double ratio, bool nested, int lowBound,
-            Sampling samplingStrategy, Weighting weightingScheme,
+            std::vector<int> samples,
+            Weighting weightingScheme,
             bool verbose
     ) {
+
+        // Data structure for neighbors inside level k
+        std::vector<std::set<int>> neighborsLists;
+
+        // List of triplets to build prolongation operator U
+        std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
+
+        // Nearest source for every given point
+        std::vector<size_t> nearestSource(points.rows());
+
+        // Distance of the nearest source for every point (initialized to max)
+        Eigen::VectorXd nearestSourceDistance(points.rows());
+        nearestSourceDistance.setConstant(std::numeric_limits<double>::max());
+
         // todo
         return {};
     }
