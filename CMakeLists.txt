@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(gravomg)
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Eigen
@@ -26,7 +26,7 @@ else ()
 
     add_library(eigen INTERFACE)
     add_library(Eigen3::Eigen ALIAS eigen)
-    target_include_directories(eigen INTERFACE ${eigen_SOURCE_DIR})
+    target_include_directories(eigen SYSTEM INTERFACE ${eigen_SOURCE_DIR})
 endif ()
 
 # ===  done finding Eigen

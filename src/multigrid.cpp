@@ -13,7 +13,7 @@
 
 namespace GravoMG {
 
-    double averageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh) {
+    double averageEdgeLength(const Eigen::MatrixXd&pos, const Eigen::MatrixXi&neigh) {
         double sumLength = 0;
         int nEdges = 0;
         for (int i = 0; i < pos.rows(); ++i) {
@@ -28,29 +28,72 @@ namespace GravoMG {
                 }
             }
         }
-        return sumLength / (double) nEdges;
+        return sumLength / (double)nEdges;
     }
 
 
     Eigen::SparseMatrix<double> constructProlongation(
-            Eigen::MatrixXd points,
-            std::vector<int> samples,
-            Weighting weightingScheme,
-            bool verbose
+        const Eigen::MatrixXd&points,
+        const Eigen::MatrixXi&edges,
+        const std::vector<std::size_t>&samples,
+        Weighting weightingScheme,
+        bool verbose
     ) {
 
-        // Data structure for neighbors inside level k
+        // Nearest source for every given point
+        std::vector<size_t> nearestSources(points.rows());
+
+        // Distance of the nearest source for every point (initialized to max)
+        Eigen::VectorXd nearestSourceDistances(points.rows());
+        nearestSourceDistances.setConstant(std::numeric_limits<double>::max());
+
+        // Compute distance from fine points to coarse points and get the closest coarse point
+        constructDijkstraWithCluster(
+            points, samples,
+            edges, nearestSourceDistances, nearestSources
+        );
+
+        // Create neighborhood for the next level
         std::vector<std::set<int>> neighborsLists;
+        for (int fineIdx = 0; fineIdx < samples.size(); ++fineIdx) {
+            for (int j = 0; j < edges.cols(); ++j) {
+                int neighIdx = edges(fineIdx, j);
+                if (neighIdx < 0) break;
+                // If the two points belong to different parent points
+                if (nearestSources[fineIdx] != nearestSources[neighIdx]) {
+                    // Ensure the other point's parent is in the neighbor list
+                    neighborsLists[nearestSources[fineIdx]].insert(nearestSources[neighIdx]);
+                }
+            }
+        }
+
+        // Convert the set-based neighbor list to a standard homogenuous table
+
+        // First, find the maximum number of neighbors any point has
+        std::size_t maxNeighNum = 0;
+        for (const auto&neighbors: neighborsLists) {
+            if (neighbors.size() > maxNeighNum) {
+                maxNeighNum = neighbors.size();
+            }
+        }
+        // Create a neighbors table with room for all neighbors
+        Eigen::MatrixXi sampleEdges{samples.size(), maxNeighNum}; // todo: When is this set?
+
+        // Fill the neighbors table; unused slots are set to -1
+        sampleEdges.setConstant(-1);
+        for (int i = 0; i < neighborsLists.size(); ++i) {
+            sampleEdges(i, 0) = i;
+            int iCounter = 1;
+            for (int node: neighborsLists[i]) {
+                if (node == i) continue;
+                if (iCounter >= maxNeighNum) break;
+                sampleEdges(i, iCounter) = node;
+                iCounter++;
+            }
+        }
 
         // List of triplets to build prolongation operator U
         std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
-
-        // Nearest source for every given point
-        std::vector<size_t> nearestSource(points.rows());
-
-        // Distance of the nearest source for every point (initialized to max)
-        Eigen::VectorXd nearestSourceDistance(points.rows());
-        nearestSourceDistance.setConstant(std::numeric_limits<double>::max());
 
         // todo
         return {};
@@ -58,10 +101,10 @@ namespace GravoMG {
 
 
     std::vector<Eigen::SparseMatrix<double>> constructProlongations(
-            Eigen::MatrixXd points,
-            double ratio, bool nested, int lowBound,
-            Sampling samplingStrategy, Weighting weightingScheme,
-            bool verbose
+        Eigen::MatrixXd points,
+        double ratio, bool nested, int lowBound,
+        Sampling samplingStrategy, Weighting weightingScheme,
+        bool verbose
     ) {
         // Prolongation operators
         std::vector<Eigen::SparseMatrix<double>> U;
@@ -70,7 +113,7 @@ namespace GravoMG {
         std::vector<size_t> DoF;
 
         // Sampled points (per level)
-        std::vector<std::vector<int>> samples;
+        std::vector<std::vector<size_t>> samples;
 
         // Nearest source for every given point (per level)
         std::vector<std::vector<size_t>> nearestSource;
@@ -121,15 +164,15 @@ namespace GravoMG {
                     break;
                 case RANDOM:
                     DoF.push_back(DoF[k] / ratio);
-                    samples.push_back(std::vector<int>(DoF[k]));
+                    samples.emplace_back(DoF[k]);
                     std::iota(samples[k].begin(), samples[k].end(), 0);
                     std::shuffle(samples[k].begin(), samples[k].end(), generator);
                     samples[k].resize(DoF[k + 1]);
                     break;
                 case MIS:
                     samples.push_back(maximumDeltaIndependentSetWithDistances(
-                            levelPoints, neighLevelK,
-                            radius, D, nearestSource[k]
+                        levelPoints, neighLevelK,
+                        radius, D, nearestSource[k]
                     ));
                     DoF.push_back(samples[k].size());
                     break;
@@ -145,7 +188,7 @@ namespace GravoMG {
 
             // Compute distance from fine points to coarse points and get the closest coarse point
             // using distances from MIS if computed before
-            constructDijkstraWithCluster(levelPoints, samples[k], neighLevelK, k, D,
+            constructDijkstraWithCluster(levelPoints, samples[k], neighLevelK, D,
                                          nearestSource[k]); // Stores result in nearestSource[k]
 
             // Create neighborhood for the next level
@@ -162,7 +205,7 @@ namespace GravoMG {
 
             // Store in homogeneous data structure
             std::size_t maxNeighNum = 0;
-            for (const auto &neighbors: neighborsLists) {
+            for (const auto&neighbors: neighborsLists) {
                 if (neighbors.size() > maxNeighNum) {
                     maxNeighNum = neighbors.size();
                 }
@@ -353,9 +396,9 @@ namespace GravoMG {
                         bool edgeFound = false;
                         double minEdge = std::numeric_limits<double>::max();
                         int minEdgeIdx = 0;
-                        for (const auto &element: insideEdge) {
-                            const auto &key = element.first;
-                            const auto &value = element.second;
+                        for (const auto&element: insideEdge) {
+                            const auto&key = element.first;
+                            const auto&value = element.second;
                             if (value >= 0. && value < minEdge) {
                                 edgeFound = true;
                                 minEdge = value;
@@ -396,7 +439,7 @@ namespace GravoMG {
 
                             std::vector<VertexPair> pointsDistances;
                             for (int j = 0; j < neighLevelK.cols(); ++j) {
-                                int neighIdx = neighLevelK(coarseIdx, j);
+                                size_t neighIdx = neighLevelK(coarseIdx, j);
                                 if (neighIdx < 0 || neighIdx == coarseIdx) continue;
                                 VertexPair vp = {neighIdx, (finePoint - tempPoints.row(neighIdx)).norm()};
                                 pointsDistances.push_back(vp);
@@ -415,7 +458,7 @@ namespace GravoMG {
                     }
                 }
             }
-            if (verbose) cout << "Percentage of fallback: " << (double) fallbackCount / (double) DoF[k] * 100 << endl;
+            if (verbose) cout << "Percentage of fallback: " << (double)fallbackCount / (double)DoF[k] * 100 << endl;
 
             levelPoints = tempPoints;
 
@@ -431,9 +474,9 @@ namespace GravoMG {
         return U;
     }
 
-    double inTriangle(const Eigen::RowVector3d &p, const std::vector<int> &tri,
-                      const Eigen::RowVector3d &triNormal, const Eigen::MatrixXd &pos,
-                      Eigen::RowVector3d &bary, std::map<int, float> &insideEdge) {
+    double inTriangle(const Eigen::RowVector3d&p, const std::vector<int>&tri,
+                      const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
+                      Eigen::RowVector3d&bary, std::map<int, float>&insideEdge) {
         Eigen::RowVector3d v1, v2, v3;
         v1 = pos.row(tri[0]);
         v2 = pos.row(tri[1]);
@@ -470,14 +513,14 @@ namespace GravoMG {
         return -1.;
     }
 
-    std::vector<double> uniformWeights(const int &n_points) {
+    std::vector<double> uniformWeights(const int&n_points) {
         std::vector<double> weights(n_points);
         std::fill(weights.begin(), weights.end(), 1. / n_points);
         return weights;
     }
 
-    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd &pos, const Eigen::RowVector3d &p,
-                                               const std::vector<int> &edges) {
+    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd&pos, const Eigen::RowVector3d&p,
+                                               const std::vector<int>&edges) {
         double sumWeight = 0.;
         std::vector<double> weights(edges.size());
         for (int j = 0; j < edges.size(); ++j) {
@@ -490,9 +533,9 @@ namespace GravoMG {
         return weights;
     }
 
-    void constructDijkstraWithCluster(const Eigen::MatrixXd &points, const std::vector<int> &source,
-                                      const Eigen::MatrixXi &neigh, int k, Eigen::VectorXd &D,
-                                      std::vector<size_t> &nearestSourceK) {
+    void constructDijkstraWithCluster(const Eigen::MatrixXd&points, const std::vector<std::size_t>&source,
+                                      const Eigen::MatrixXi&neigh, Eigen::VectorXd&D,
+                                      std::vector<size_t>&nearestSourceK) {
         std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<VertexPair>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
 
@@ -510,9 +553,8 @@ namespace GravoMG {
             Eigen::RowVector3d vertex1 = points.row(vp1.vId);
             DistanceQueue.pop();
 
-            //for (int vNeigh : neigh.row(vp1.vId)) {
             for (int i = 0; i < neigh.cols(); ++i) {
-                int vNeigh = neigh(vp1.vId, i);
+                size_t vNeigh = neigh(vp1.vId, i);
 
                 if (vNeigh >= 0) {
                     double dist, distTemp;
@@ -533,7 +575,4 @@ namespace GravoMG {
             }
         }
     }
-
-
 }
-

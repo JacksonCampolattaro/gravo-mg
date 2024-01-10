@@ -9,7 +9,7 @@
 /* Data structure for Priority Queue */
 struct VertexPair {
 
-    int vId;
+    size_t vId;
     double distance;
 
     bool operator>(const VertexPair &ref) const { return distance > ref.distance; }
@@ -45,8 +45,8 @@ namespace GravoMG {
     );
 
     static void constructDijkstraWithCluster(
-            const Eigen::MatrixXd &points, const std::vector<int> &source,
-            const Eigen::MatrixXi &neigh, int k, Eigen::VectorXd &D,
+            const Eigen::MatrixXd &points, const std::vector<std::size_t> &source,
+            const Eigen::MatrixXi &neigh, Eigen::VectorXd &D,
             std::vector<size_t> &nearestSourceK
     );
 

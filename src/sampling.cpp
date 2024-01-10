@@ -1,17 +1,15 @@
-
 #include "gravomg/sampling.h"
 
 #include <iostream>
 
 namespace GravoMG {
-
-    std::vector<int> maximumDeltaIndependentSet(
-            const Eigen::MatrixXd &pos,
-            const Eigen::MatrixXi &edges,
-            const double &radius
+    std::vector<size_t> maximumDeltaIndependentSet(
+        const Eigen::MatrixXd&pos,
+        const Eigen::MatrixXi&edges,
+        const double&radius
     ) {
         std::vector<bool> visited(edges.rows());
-        std::vector<int> selection;
+        std::vector<size_t> selection;
         for (int i = 0; i < edges.rows(); ++i) {
             if (!visited[i]) {
                 selection.push_back(i);
@@ -28,15 +26,15 @@ namespace GravoMG {
         return selection;
     }
 
-    std::vector<int> maximumDeltaIndependentSetWithDistances(
-            const Eigen::MatrixXd &pos,
-            const Eigen::MatrixXi &edges,
-            const double &radius,
-            Eigen::VectorXd &D,
-            std::vector<size_t> &nearestSourceK
+    std::vector<size_t> maximumDeltaIndependentSetWithDistances(
+        const Eigen::MatrixXd&pos,
+        const Eigen::MatrixXi&edges,
+        const double&radius,
+        Eigen::VectorXd&D,
+        std::vector<size_t>&nearestSourceK
     ) {
         std::vector<bool> visited(edges.rows());
-        std::vector<int> selection;
+        std::vector<size_t> selection;
         int sampleIdx = 0;
         for (int i = 0; i < edges.rows(); ++i) {
             if (!visited[i]) {
@@ -60,17 +58,16 @@ namespace GravoMG {
         return selection;
     }
 
-    std::vector<int> fastDiscSample(
-            const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius
+    std::vector<size_t> fastDiscSample(
+        const Eigen::MatrixXd&pos, const Eigen::MatrixXi&edges, const double&radius
     ) {
-
         // todo: in the future it might make sense to return these!
         Eigen::VectorXd D(edges.rows());
         D.setConstant(std::numeric_limits<double>::max());
         std::vector<size_t> nearestSourceK(edges.rows());
 
         std::vector<bool> visited(edges.rows());
-        std::vector<int> selection{};
+        std::vector<size_t> selection{};
         int sampleIdx = 0;
         for (int i = 0; i < edges.rows(); ++i) {
             if (!visited[i]) {
