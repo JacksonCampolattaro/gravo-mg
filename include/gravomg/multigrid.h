@@ -34,14 +34,14 @@ namespace GravoMG {
 
 
     static double inTriangle(
-            const Eigen::RowVector3d &p, const std::vector<int> &tri, const Eigen::RowVector3d &triNormal,
-            const Eigen::MatrixXd &pos, Eigen::RowVector3d &bary, std::map<int, float> &insideEdge
+            const Eigen::RowVector3d &p, const std::vector<size_t> &tri, const Eigen::RowVector3d &triNormal,
+            const Eigen::MatrixXd &pos, Eigen::RowVector3d &bary, std::map<size_t, float> &insideEdge
     );
 
     static std::vector<double> uniformWeights(const int &n_points);
 
     static std::vector<double> inverseDistanceWeights(
-            const Eigen::MatrixXd &pos, const Eigen::RowVector3d &source, const std::vector<int> &edges
+            const Eigen::MatrixXd &pos, const Eigen::RowVector3d &source, const std::vector<size_t> &edges
     );
 
     static void constructDijkstraWithCluster(

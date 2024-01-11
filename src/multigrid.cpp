@@ -16,9 +16,9 @@ namespace GravoMG {
     double averageEdgeLength(const Eigen::MatrixXd&pos, const Eigen::MatrixXi&neigh) {
         double sumLength = 0;
         int nEdges = 0;
-        for (int i = 0; i < pos.rows(); ++i) {
+        for (size_t i = 0; i < pos.rows(); ++i) {
             Eigen::Vector3d p1 = pos.row(i);
-            for (int j = 0; j < neigh.cols(); ++j) {
+            for (size_t j = 0; j < neigh.cols(); ++j) {
                 if (neigh(i, j) < 0) continue;
                 Eigen::Vector3d p2 = pos.row(neigh(i, j));
                 double dist = (p1 - p2).norm();
@@ -37,7 +37,7 @@ namespace GravoMG {
         const Eigen::MatrixXi&edges,
         const std::vector<std::size_t>&samples,
         Weighting weightingScheme,
-        bool verbose
+        bool verbose, bool nested
     ) {
 
         // Nearest source for every given point
@@ -54,10 +54,10 @@ namespace GravoMG {
         );
 
         // Create neighborhood for the next level
-        std::vector<std::set<int>> neighborsLists;
-        for (int fineIdx = 0; fineIdx < samples.size(); ++fineIdx) {
-            for (int j = 0; j < edges.cols(); ++j) {
-                int neighIdx = edges(fineIdx, j);
+        std::vector<std::set<size_t>> neighborsLists;
+        for (size_t fineIdx = 0; fineIdx < samples.size(); ++fineIdx) {
+            for (size_t j = 0; j < edges.cols(); ++j) {
+                size_t neighIdx = edges(fineIdx, j);
                 if (neighIdx < 0) break;
                 // If the two points belong to different parent points
                 if (nearestSources[fineIdx] != nearestSources[neighIdx]) {
@@ -68,32 +68,272 @@ namespace GravoMG {
         }
 
         // Convert the set-based neighbor list to a standard homogenuous table
-
-        // First, find the maximum number of neighbors any point has
-        std::size_t maxNeighNum = 0;
-        for (const auto&neighbors: neighborsLists) {
-            if (neighbors.size() > maxNeighNum) {
-                maxNeighNum = neighbors.size();
-            }
-        }
-        // Create a neighbors table with room for all neighbors
-        Eigen::MatrixXi sampleEdges{samples.size(), maxNeighNum}; // todo: When is this set?
-
-        // Fill the neighbors table; unused slots are set to -1
-        sampleEdges.setConstant(-1);
-        for (int i = 0; i < neighborsLists.size(); ++i) {
+        auto maxNeighborCount = std::transform_reduce(
+                                    neighborsLists.begin(), neighborsLists.end(),
+                                    std::size_t{0}, [](const auto&a, const auto&b) { return std::max(a, b); },
+                                    [](const auto&set) { return set.size(); }
+                                ) + 1; // todo: I think this is necessary to leave room for self-connections
+        Eigen::MatrixXi sampleEdges{samples.size(), maxNeighborCount};
+        sampleEdges.setConstant(-1); // Unused slots are set to -1
+        for (size_t i = 0; i < neighborsLists.size(); ++i) {
+            // Self-connection
             sampleEdges(i, 0) = i;
-            int iCounter = 1;
-            for (int node: neighborsLists[i]) {
+            Eigen::Index j{1};
+            for (auto node: neighborsLists[i]) {
                 if (node == i) continue;
-                if (iCounter >= maxNeighNum) break;
-                sampleEdges(i, iCounter) = node;
-                iCounter++;
+                sampleEdges(i, j++) = node;
             }
         }
+
+        if (verbose) std::cout << "Setting up the point locations for the next level\n";
+
+        // Setting up the DoF for the next level
+        // tempPoints are the centers of the voronoi cells, each row for each voronoi cells
+        Eigen::MatrixXd voronoiCenters(samples.size(), points.cols());
+        voronoiCenters.setZero();
+        if (nested) {
+            // If the user chooses, the coarse points can be the same as the sampled points
+            for (size_t coarseIdx = 0; coarseIdx < samples.size(); ++coarseIdx) {
+                voronoiCenters.row(coarseIdx) = points.row(samples[coarseIdx]);
+            }
+        } else {
+            // Otherwise, coarse points will be produced by averaging the related fine points
+
+            // Accumulate point coordinates
+            std::vector<int> clusterSizes(samples.size());
+            for (size_t fineIdx = 0; fineIdx < points.rows(); ++fineIdx) {
+                Eigen::Index coarseIdx = nearestSources[fineIdx];
+                voronoiCenters.row(coarseIdx) = voronoiCenters.row(coarseIdx) + points.row(fineIdx);
+                ++clusterSizes[coarseIdx];
+            }
+            for (size_t coarseIdx = 0; coarseIdx < samples.size(); ++coarseIdx) {
+                if (clusterSizes[coarseIdx] == 1) {
+                    voronoiCenters.row(coarseIdx) = points.row(samples[coarseIdx]);
+                    for (size_t neighIdx: neighborsLists[coarseIdx]) {
+                        voronoiCenters.row(coarseIdx) =
+                                voronoiCenters.row(coarseIdx) + points.row(samples[neighIdx]);
+                    }
+                    voronoiCenters.row(coarseIdx) = voronoiCenters.row(coarseIdx) / (neighborsLists[coarseIdx].size() + 1.);
+                } else {
+                    // Divide by the number of points included in teh average
+                    voronoiCenters.row(coarseIdx) = voronoiCenters.row(coarseIdx) / clusterSizes[coarseIdx];
+                }
+            }
+        }
+
+        // Create triangles for this level based on Voronoi cells
+        std::vector<std::vector<size_t>> tris;
+        tris.reserve(samples.size() * maxNeighborCount);
+        std::vector<std::vector<size_t>> connectedTris{samples.size()};
+        std::vector<Eigen::RowVector3d> triNormals;
+        triNormals.reserve(samples.size() * maxNeighborCount);
+        size_t triIdx = 0;
+        for (size_t coarseIdx = 0; coarseIdx < samples.size(); ++coarseIdx) {
+            // Iterate over delaunay triangles
+            size_t v2Idx, v3Idx;
+            for (auto it = neighborsLists[coarseIdx].begin(); it != neighborsLists[coarseIdx].end(); it++) {
+                v2Idx = *it;
+                // We iterate over the coarse indices in order,
+                // so if the neighboring idx is lower then the current coarseIdx,
+                // it must have been considered before and be part of a triangle.
+                if (v2Idx < coarseIdx) continue;
+                for (auto it2 = std::next(it); it2 != neighborsLists[coarseIdx].end(); it2++) {
+                    v3Idx = *it2;
+                    if (v3Idx < coarseIdx) continue;
+                    if (neighborsLists[v2Idx].find(v3Idx) != neighborsLists[v2Idx].end()) {
+                        tris.push_back({coarseIdx, v2Idx, v3Idx});
+                        Eigen::RowVector3d e12 = voronoiCenters.row(v2Idx) - voronoiCenters.row(coarseIdx);
+                        Eigen::RowVector3d e13 = voronoiCenters.row(v3Idx) - voronoiCenters.row(coarseIdx);
+                        triNormals.push_back(e12.cross(e13).normalized());
+                        connectedTris[coarseIdx].push_back(triIdx);
+                        connectedTris[v2Idx].push_back(triIdx);
+                        connectedTris[v3Idx].push_back(triIdx);
+                        ++triIdx;
+                    }
+                }
+            }
+        }
+        tris.shrink_to_fit();
+        triNormals.shrink_to_fit();
 
         // List of triplets to build prolongation operator U
         std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
+
+        // Create local triangulation on each cluster (centralized at sample i)
+        int notrisfound = 0;
+        int edgesfound = 0;
+        int fallbackCount = 0;
+
+        // Iterate over each point
+        for (size_t fineIdx = 0; fineIdx < points.rows(); ++fineIdx) {
+            Eigen::RowVector3d finePoint = points.row(fineIdx);
+            size_t coarseIdx = nearestSources[fineIdx];
+            Eigen::RowVector3d coarsePoint = voronoiCenters.row(coarseIdx);
+            std::vector<double> weights;
+
+            // Exact matches get a weight of 1.0 (if in nested mode)
+            if (nested && samples[nearestSources[fineIdx]] == fineIdx) {
+                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, 1.));
+                continue;
+            }
+
+            // If the coarse point has no neighbors,
+            // set the weight to 1 for the coarse point.
+            if (neighborsLists[coarseIdx].empty()) {
+                // todo: this should never happen!
+                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, 1.));
+            } else if (neighborsLists[coarseIdx].size() == 1) {
+                // If the coarse point only has one neighbor, no triangle can be created.
+                // Thus, the weights are distributed w.r.t. the distance to each coarse point.
+                size_t neighIdx = *neighborsLists[coarseIdx].begin();
+                Eigen::RowVector3d neighPoint = voronoiCenters.row(neighIdx);
+
+                // get the distance to the two neighboring centroids
+                Eigen::RowVector3d e12 = neighPoint - coarsePoint;
+                double e12Length = max(e12.norm(), 1e-8);
+                double w2 = (points.row(fineIdx) - coarsePoint).dot(e12.normalized()) / e12Length;
+                w2 = min(max(w2, 0.), 1.);
+                double w1 = 1 - w2;
+
+                switch (weightingScheme) {
+                    case BARYCENTRIC:
+                        AllTriplet.emplace_back(fineIdx, coarseIdx, w1);
+                        AllTriplet.emplace_back(fineIdx, neighIdx, w2);
+                        break;
+                    case UNIFORM:
+                        weights = uniformWeights(2);
+                        AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
+                        AllTriplet.emplace_back(fineIdx, neighIdx, weights[1]);
+                        break;
+                    case INVDIST:
+                        std::vector<size_t> endPoints = {coarseIdx, neighIdx};
+                        weights = inverseDistanceWeights(voronoiCenters, finePoint, endPoints);
+                        AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
+                        AllTriplet.emplace_back(fineIdx, neighIdx, weights[1]);
+                        break;
+                }
+            } else {
+                // Only keep triangle with minimum distance
+                double minDistToTriangle = std::numeric_limits<double>::max();
+                Eigen::RowVector3d minBary = {0., 0., 0.};
+                std::vector<size_t> minTri;
+                bool triFound = false;
+
+                // Values are positive if inside and negative if not
+                // Float value represents distance
+                std::map<size_t, float> insideEdge;
+
+                // Iterate over all triangles
+                for (size_t triIdx: connectedTris[coarseIdx]) {
+                    std::vector<size_t> tri = tris[triIdx];
+                    // Make sure that the coarseIdx is in position 0, while keeping orientation
+                    while (tri[0] != coarseIdx) std::rotate(tri.begin(), tri.begin() + 1, tri.end());
+
+                    Eigen::RowVector3d bary = {0., 0., 0.};
+                    // If the triangle contains the point, the distance is positive, else it's negative
+                    double distToTriangle = inTriangle(finePoint, tri, triNormals[triIdx], voronoiCenters, bary,
+                                                       insideEdge);
+                    if (distToTriangle >= 0. && distToTriangle < minDistToTriangle) {
+                        triFound = true;
+                        minDistToTriangle = distToTriangle;
+                        minTri = tri;
+                        minBary = bary;
+                        break;
+                    }
+                }
+
+                if (triFound) {
+                    switch (weightingScheme) {
+                        case BARYCENTRIC:
+                            AllTriplet.emplace_back(fineIdx, minTri[0], minBary(0));
+                            AllTriplet.emplace_back(fineIdx, minTri[1], minBary(1));
+                            AllTriplet.emplace_back(fineIdx, minTri[2], minBary(2));
+                            break;
+                        case UNIFORM:
+                            weights = uniformWeights(3);
+                            AllTriplet.emplace_back(fineIdx, minTri[0], weights[0]);
+                            AllTriplet.emplace_back(fineIdx, minTri[1], weights[1]);
+                            AllTriplet.emplace_back(fineIdx, minTri[2], weights[2]);
+                            break;
+                        case INVDIST:
+                            weights = inverseDistanceWeights(voronoiCenters, finePoint, minTri);
+                            AllTriplet.emplace_back(fineIdx, minTri[0], weights[0]);
+                            AllTriplet.emplace_back(fineIdx, minTri[1], weights[1]);
+                            AllTriplet.emplace_back(fineIdx, minTri[2], weights[2]);
+                            break;
+                    }
+                } else {
+                    bool edgeFound = false;
+                    double minEdge = std::numeric_limits<double>::max();
+                    size_t minEdgeIdx = 0;
+                    for (const auto&element: insideEdge) {
+                        const auto&key = element.first;
+                        const auto&value = element.second;
+                        if (value >= 0. && value < minEdge) {
+                            edgeFound = true;
+                            minEdge = value;
+                            minEdgeIdx = key;
+                            break;
+                        }
+                    }
+                    if (edgeFound) {
+                        ++edgesfound;
+                        Eigen::RowVector3d p2 = voronoiCenters.row(minEdgeIdx);
+                        Eigen::RowVector3d e12 = p2 - coarsePoint;
+                        double e12Length = max(e12.norm(), 1e-8);
+                        double w2 = (finePoint - coarsePoint).dot(e12.normalized()) / e12Length;
+                        w2 = min(max(w2, 0.), 1.);
+                        double w1 = 1. - w2;
+
+                        switch (weightingScheme) {
+                            case BARYCENTRIC:
+                                AllTriplet.emplace_back(fineIdx, coarseIdx, w1);
+                                AllTriplet.emplace_back(fineIdx, minEdgeIdx, w2);
+                                break;
+                            case UNIFORM:
+                                weights = uniformWeights(2);
+                                AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
+                                AllTriplet.emplace_back(fineIdx, minEdgeIdx, weights[1]);
+                                break;
+                            case INVDIST:
+                                std::vector<size_t> endPointsEdge = {coarseIdx, minEdgeIdx};
+                                weights = inverseDistanceWeights(voronoiCenters, finePoint, endPointsEdge);
+                                AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
+                                AllTriplet.emplace_back(fineIdx, minEdgeIdx, weights[1]);
+                                break;
+                        }
+                    } else {
+                        // Use closest three
+                        std::vector<size_t> prolongFrom(3);
+                        prolongFrom[0] = coarseIdx;
+
+                        std::vector<VertexPair> pointsDistances;
+                        for (size_t j = 0; j < edges.cols(); ++j) {
+                            size_t neighIdx = edges(coarseIdx, j);
+                            if (neighIdx < 0 || neighIdx == coarseIdx) continue;
+                            VertexPair vp = {neighIdx, (finePoint - voronoiCenters.row(neighIdx)).norm()};
+                            pointsDistances.push_back(vp);
+                        }
+                        std::sort(pointsDistances.begin(), pointsDistances.end(), std::less<VertexPair>());
+                        for (int j = 1; j < 3; ++j) {
+                            prolongFrom[j] = pointsDistances[j - 1].vId;
+                        }
+                        std::vector<double> weights = inverseDistanceWeights(voronoiCenters, finePoint, prolongFrom);
+                        for (int j = 0; j < prolongFrom.size(); j++) {
+                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, prolongFrom[j], weights[j]));
+                        }
+                        ++fallbackCount;
+                    }
+                    ++notrisfound;
+                }
+            }
+        }
+        if (verbose) cout << "Percentage of fallback: " << (double)fallbackCount / (double)points.rows() * 100 << endl;
+
+        // The matrix U maps between fine points and coarse
+        Eigen::SparseMatrix<double> ULevel;
+        ULevel.resize(points.rows(), voronoiCenters.rows());
+        ULevel.setFromTriplets(AllTriplet.begin(), AllTriplet.end());
 
         // todo
         return {};
@@ -235,15 +475,15 @@ namespace GravoMG {
                 }
             } else {
                 std::vector<int> clusterSizes(DoF[k + 1]);
-                for (int fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
-                    int coarseIdx = nearestSource[k][fineIdx];
+                for (size_t fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
+                    size_t coarseIdx = nearestSource[k][fineIdx];
                     tempPoints.row(coarseIdx) = tempPoints.row(coarseIdx) + levelPoints.row(fineIdx);
                     ++clusterSizes[coarseIdx];
                 }
-                for (int coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
+                for (size_t coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
                     if (clusterSizes[coarseIdx] == 1) {
                         tempPoints.row(coarseIdx) = levelPoints.row(samples[k][coarseIdx]);
-                        for (int neighIdx: neighborsLists[coarseIdx]) {
+                        for (size_t neighIdx: neighborsLists[coarseIdx]) {
                             tempPoints.row(coarseIdx) =
                                     tempPoints.row(coarseIdx) + levelPoints.row(samples[k][neighIdx]);
                         }
@@ -256,15 +496,15 @@ namespace GravoMG {
 
 
             // Create triangles for this level based on Voronoi cells
-            std::vector<std::vector<int>> tris;
+            std::vector<std::vector<size_t>> tris;
             tris.reserve(DoF[k + 1] * maxNeighNum);
-            std::vector<std::vector<int>> connectedTris(DoF[k + 1]);
+            std::vector<std::vector<size_t>> connectedTris(DoF[k + 1]);
             std::vector<Eigen::RowVector3d> triNormals;
             triNormals.reserve(DoF[k + 1] * maxNeighNum);
-            int triIdx = 0;
-            for (int coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
+            size_t triIdx = 0;
+            for (size_t coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
                 // Iterate over delaunay triangles
-                int v2Idx, v3Idx;
+                size_t v2Idx, v3Idx;
                 for (auto it = neighborsLists[coarseIdx].begin(); it != neighborsLists[coarseIdx].end(); it++) {
                     v2Idx = *it;
                     // We iterate over the coarse indices in order,
@@ -296,9 +536,9 @@ namespace GravoMG {
             int edgesfound = 0;
             int fallbackCount = 0;
 
-            for (int fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
+            for (size_t fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
                 Eigen::RowVector3d finePoint = levelPoints.row(fineIdx);
-                int coarseIdx = nearestSource[k][fineIdx];
+                size_t coarseIdx = nearestSource[k][fineIdx];
                 Eigen::RowVector3d coarsePoint = tempPoints.row(coarseIdx);
                 std::vector<double> weights;
 
@@ -315,7 +555,7 @@ namespace GravoMG {
                 } else if (neighborsLists[coarseIdx].size() == 1) {
                     // If the coarse point only has one neighbor, no triangle can be created.
                     // Thus, the weights are distributed w.r.t. the distance to each coarse point.
-                    int neighIdx = *neighborsLists[coarseIdx].begin();
+                    size_t neighIdx = *neighborsLists[coarseIdx].begin();
                     Eigen::RowVector3d neighPoint = tempPoints.row(neighIdx);
 
                     // get the distance to the two neighboring centroids
@@ -336,7 +576,7 @@ namespace GravoMG {
                             AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, neighIdx, weights[1]));
                             break;
                         case INVDIST:
-                            std::vector<int> endPoints = {coarseIdx, neighIdx};
+                            std::vector<size_t> endPoints = {coarseIdx, neighIdx};
                             weights = inverseDistanceWeights(tempPoints, finePoint, endPoints);
                             AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, weights[0]));
                             AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, neighIdx, weights[1]));
@@ -346,16 +586,16 @@ namespace GravoMG {
                     // Only keep triangle with minimum distance
                     double minDistToTriangle = std::numeric_limits<double>::max();
                     Eigen::RowVector3d minBary = {0., 0., 0.};
-                    std::vector<int> minTri;
+                    std::vector<size_t> minTri;
                     bool triFound = false;
 
                     // Values are positive if inside and negative if not
                     // Float value represents distance
-                    std::map<int, float> insideEdge;
+                    std::map<size_t, float> insideEdge;
 
                     // Iterate over all triangles
-                    for (int triIdx: connectedTris[coarseIdx]) {
-                        std::vector<int> tri = tris[triIdx];
+                    for (size_t triIdx: connectedTris[coarseIdx]) {
+                        std::vector<size_t> tri = tris[triIdx];
                         // Make sure that the coarseIdx is in position 0, while keeping orientation
                         while (tri[0] != coarseIdx) std::rotate(tri.begin(), tri.begin() + 1, tri.end());
 
@@ -395,7 +635,7 @@ namespace GravoMG {
                     } else {
                         bool edgeFound = false;
                         double minEdge = std::numeric_limits<double>::max();
-                        int minEdgeIdx = 0;
+                        size_t minEdgeIdx = 0;
                         for (const auto&element: insideEdge) {
                             const auto&key = element.first;
                             const auto&value = element.second;
@@ -426,7 +666,7 @@ namespace GravoMG {
                                     AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minEdgeIdx, weights[1]));
                                     break;
                                 case INVDIST:
-                                    std::vector<int> endPointsEdge = {coarseIdx, minEdgeIdx};
+                                    std::vector<size_t> endPointsEdge = {coarseIdx, minEdgeIdx};
                                     weights = inverseDistanceWeights(tempPoints, finePoint, endPointsEdge);
                                     AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, weights[0]));
                                     AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minEdgeIdx, weights[1]));
@@ -434,7 +674,7 @@ namespace GravoMG {
                             }
                         } else {
                             // Use closest three
-                            std::vector<int> prolongFrom(3);
+                            std::vector<size_t> prolongFrom(3);
                             prolongFrom[0] = coarseIdx;
 
                             std::vector<VertexPair> pointsDistances;
@@ -445,7 +685,7 @@ namespace GravoMG {
                                 pointsDistances.push_back(vp);
                             }
                             std::sort(pointsDistances.begin(), pointsDistances.end(), std::less<VertexPair>());
-                            for (int j = 1; j < 3; ++j) {
+                            for (size_t j = 1; j < 3; ++j) {
                                 prolongFrom[j] = pointsDistances[j - 1].vId;
                             }
                             std::vector<double> weights = inverseDistanceWeights(tempPoints, finePoint, prolongFrom);
@@ -474,9 +714,9 @@ namespace GravoMG {
         return U;
     }
 
-    double inTriangle(const Eigen::RowVector3d&p, const std::vector<int>&tri,
+    double inTriangle(const Eigen::RowVector3d&p, const std::vector<size_t>&tri,
                       const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
-                      Eigen::RowVector3d&bary, std::map<int, float>&insideEdge) {
+                      Eigen::RowVector3d&bary, std::map<size_t, float>&insideEdge) {
         Eigen::RowVector3d v1, v2, v3;
         v1 = pos.row(tri[0]);
         v2 = pos.row(tri[1]);
@@ -520,14 +760,14 @@ namespace GravoMG {
     }
 
     std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd&pos, const Eigen::RowVector3d&p,
-                                               const std::vector<int>&edges) {
+                                               const std::vector<size_t>&edges) {
         double sumWeight = 0.;
         std::vector<double> weights(edges.size());
-        for (int j = 0; j < edges.size(); ++j) {
+        for (size_t j = 0; j < edges.size(); ++j) {
             weights[j] = 1. / max(1e-8, (p - pos.row(edges[j])).norm());
             sumWeight += weights[j];
         }
-        for (int j = 0; j < weights.size(); ++j) {
+        for (size_t j = 0; j < weights.size(); ++j) {
             weights[j] = weights[j] / sumWeight;
         }
         return weights;
@@ -539,21 +779,21 @@ namespace GravoMG {
         std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<VertexPair>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
 
-        for (int i = 0; i < source.size(); ++i) {
+        for (size_t i = 0; i < source.size(); ++i) {
             D(source[i]) = 0.0;
             VertexPair vp{source[i], D(source[i])};
             DistanceQueue.push(vp);
             nearestSourceK[source[i]] = i;
         }
 
-        int curSource;
+        size_t curSource;
         while (!DistanceQueue.empty()) {
             VertexPair vp1 = DistanceQueue.top();
             curSource = nearestSourceK[vp1.vId];
             Eigen::RowVector3d vertex1 = points.row(vp1.vId);
             DistanceQueue.pop();
 
-            for (int i = 0; i < neigh.cols(); ++i) {
+            for (size_t i = 0; i < neigh.cols(); ++i) {
                 size_t vNeigh = neigh(vp1.vId, i);
 
                 if (vNeigh >= 0) {
