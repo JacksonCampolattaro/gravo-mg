@@ -9,11 +9,13 @@
 #include <chrono>
 
 #include <Eigen/Eigenvalues>
+#include <Eigen/Dense>
 #include <utility>
 
 namespace GravoMG {
 
-    double averageEdgeLength(const Eigen::MatrixXd&pos, const Eigen::MatrixXi&neigh) {
+
+    double averageEdgeLength(const Eigen::MatrixXd&pos, const EdgeMatrix&neigh) {
         double sumLength = 0;
         int nEdges = 0;
         for (size_t i = 0; i < pos.rows(); ++i) {
@@ -33,55 +35,56 @@ namespace GravoMG {
 
 
     Eigen::SparseMatrix<double> constructProlongation(
-        const Eigen::MatrixXd&points,
-        const Eigen::MatrixXi&edges,
-        const std::vector<std::size_t>&samples,
-        Weighting weightingScheme,
+        const Eigen::MatrixXd&fine_points,
+        const EdgeMatrix&fine_edges,
+        const std::vector<Index>&coarse_samples,
+        Weighting weighting_scheme,
         bool verbose, bool nested
     ) {
 
         // Nearest source for every given point
-        std::vector<size_t> nearestSources(points.rows());
+        std::vector<Index> fine_to_nearest_coarse(fine_points.rows());
 
         // Distance of the nearest source for every point (initialized to max)
-        Eigen::VectorXd nearestSourceDistances(points.rows());
-        nearestSourceDistances.setConstant(std::numeric_limits<double>::max());
+        Eigen::VectorXd fine_to_nearest_coarse_distance(fine_points.rows());
+        fine_to_nearest_coarse_distance.setConstant(std::numeric_limits<double>::max());
 
         // Compute distance from fine points to coarse points and get the closest coarse point
         constructDijkstraWithCluster(
-            points, samples,
-            edges, nearestSourceDistances, nearestSources
+            fine_points, coarse_samples,
+            fine_edges, fine_to_nearest_coarse_distance, fine_to_nearest_coarse
         );
 
         // Create neighborhood for the next level
-        std::vector<std::set<size_t>> neighborsLists;
-        for (size_t fineIdx = 0; fineIdx < samples.size(); ++fineIdx) {
-            for (size_t j = 0; j < edges.cols(); ++j) {
-                size_t neighIdx = edges(fineIdx, j);
-                if (neighIdx < 0) break;
+        std::vector<std::set<Index>> coarse_to_coarse_neighbors{coarse_samples.size()};
+        for (Index fine = 0; fine < fine_points.rows(); ++fine) {
+            for (auto&neighbor: fine_edges.row(fine)) {
+                if (neighbor < 0) break;
                 // If the two points belong to different parent points
-                if (nearestSources[fineIdx] != nearestSources[neighIdx]) {
+                if (fine_to_nearest_coarse[fine] != fine_to_nearest_coarse[neighbor]) {
                     // Ensure the other point's parent is in the neighbor list
-                    neighborsLists[nearestSources[fineIdx]].insert(nearestSources[neighIdx]);
+                    coarse_to_coarse_neighbors[fine_to_nearest_coarse[fine]].insert(fine_to_nearest_coarse[neighbor]);
                 }
             }
         }
 
         // Convert the set-based neighbor list to a standard homogenuous table
-        auto maxNeighborCount = std::transform_reduce(
-                                    neighborsLists.begin(), neighborsLists.end(),
-                                    std::size_t{0}, [](const auto&a, const auto&b) { return std::max(a, b); },
-                                    [](const auto&set) { return set.size(); }
-                                ) + 1; // todo: I think this is necessary to leave room for self-connections
-        Eigen::MatrixXi sampleEdges{samples.size(), maxNeighborCount};
-        sampleEdges.setConstant(-1); // Unused slots are set to -1
-        for (size_t i = 0; i < neighborsLists.size(); ++i) {
-            // Self-connection
-            sampleEdges(i, 0) = i;
-            Eigen::Index j{1};
-            for (auto node: neighborsLists[i]) {
-                if (node == i) continue;
-                sampleEdges(i, j++) = node;
+        auto max_num_neighbors = std::transform_reduce(
+                                     coarse_to_coarse_neighbors.begin(), coarse_to_coarse_neighbors.end(),
+                                     std::size_t{0}, [](const auto&a, const auto&b) { return std::max(a, b); },
+                                     [](const auto&set) { return set.size(); }
+                                 ) + 1; // todo: I think this is necessary to leave room for self-connections
+        EdgeMatrix coarse_edges{coarse_samples.size(), max_num_neighbors};
+        coarse_edges.setConstant(-1); // Unused slots are set to -1
+        for (Index coarse = 0; coarse < coarse_edges.rows(); ++coarse) {
+            // Add self-connection
+            coarse_edges(coarse, 0) = coarse;
+
+            // Add all connections from the set
+            Index j{1};
+            for (auto neighbor: coarse_to_coarse_neighbors[coarse]) {
+                if (neighbor == coarse) continue;
+                coarse_edges(coarse, j++) = neighbor;
             }
         }
 
@@ -89,72 +92,87 @@ namespace GravoMG {
 
         // Setting up the DoF for the next level
         // tempPoints are the centers of the voronoi cells, each row for each voronoi cells
-        Eigen::MatrixXd voronoiCenters(samples.size(), points.cols());
-        voronoiCenters.setZero();
+        Eigen::MatrixXd coarse_points(coarse_samples.size(), fine_points.cols());
+        coarse_points.setZero();
         if (nested) {
             // If the user chooses, the coarse points can be the same as the sampled points
-            for (size_t coarseIdx = 0; coarseIdx < samples.size(); ++coarseIdx) {
-                voronoiCenters.row(coarseIdx) = points.row(samples[coarseIdx]);
-            }
+            coarse_points = fine_points(coarse_samples, Eigen::all);
         } else {
             // Otherwise, coarse points will be produced by averaging the related fine points
 
             // Accumulate point coordinates
-            std::vector<int> clusterSizes(samples.size());
-            for (size_t fineIdx = 0; fineIdx < points.rows(); ++fineIdx) {
-                Eigen::Index coarseIdx = nearestSources[fineIdx];
-                voronoiCenters.row(coarseIdx) = voronoiCenters.row(coarseIdx) + points.row(fineIdx);
-                ++clusterSizes[coarseIdx];
+            std::vector<int> cluster_sizes(coarse_samples.size());
+            for (Index fine = 0; fine < fine_points.rows(); ++fine) {
+                // Each fine point gets included in the nearest coarse point
+                auto coarse = fine_to_nearest_coarse[fine];
+                coarse_points.row(coarse) += fine_points.row(fine);
+                ++cluster_sizes[coarse];
             }
-            for (size_t coarseIdx = 0; coarseIdx < samples.size(); ++coarseIdx) {
-                if (clusterSizes[coarseIdx] == 1) {
-                    voronoiCenters.row(coarseIdx) = points.row(samples[coarseIdx]);
-                    for (size_t neighIdx: neighborsLists[coarseIdx]) {
-                        voronoiCenters.row(coarseIdx) =
-                                voronoiCenters.row(coarseIdx) + points.row(samples[neighIdx]);
+            for (Index coarse = 0; coarse < coarse_samples.size(); ++coarse) {
+                if (cluster_sizes[coarse] == 1) {
+                    // If this coarse point is only associated with one fine point
+                    // fall back to including all of its neighbors
+                    // todo: what is the motivation for this?
+                    coarse_points.row(coarse) = fine_points.row(coarse_samples[coarse]); // todo: shouldn't be necessary
+                    for (Index neighbor: coarse_to_coarse_neighbors[coarse]) {
+                        coarse_points.row(coarse) += fine_points.row(coarse_samples[neighbor]);
                     }
-                    voronoiCenters.row(coarseIdx) = voronoiCenters.row(coarseIdx) / (neighborsLists[coarseIdx].size() + 1.);
+                    coarse_points.row(coarse) /= ((double)coarse_to_coarse_neighbors[coarse].size() + 1.0);
                 } else {
                     // Divide by the number of points included in teh average
-                    voronoiCenters.row(coarseIdx) = voronoiCenters.row(coarseIdx) / clusterSizes[coarseIdx];
+                    coarse_points.row(coarse) /= cluster_sizes[coarse];
                 }
             }
         }
 
         // Create triangles for this level based on Voronoi cells
-        std::vector<std::vector<size_t>> tris;
-        tris.reserve(samples.size() * maxNeighborCount);
-        std::vector<std::vector<size_t>> connectedTris{samples.size()};
-        std::vector<Eigen::RowVector3d> triNormals;
-        triNormals.reserve(samples.size() * maxNeighborCount);
-        size_t triIdx = 0;
-        for (size_t coarseIdx = 0; coarseIdx < samples.size(); ++coarseIdx) {
-            // Iterate over delaunay triangles
-            size_t v2Idx, v3Idx;
-            for (auto it = neighborsLists[coarseIdx].begin(); it != neighborsLists[coarseIdx].end(); it++) {
-                v2Idx = *it;
+        std::vector<Triangle> triangles;
+        triangles.reserve(coarse_samples.size() * max_num_neighbors);
+        std::vector<std::vector<size_t>> connected_triangles{coarse_samples.size()};
+        std::vector<Eigen::RowVector3d> triangle_normals{coarse_samples.size() * max_num_neighbors};
+        size_t current_triangle = 0;
+        for (Index coarse = 0; coarse < coarse_samples.size(); ++coarse) {
+            // Iterate over neighbors of the coarse point to get a "pinwheel" of triangles
+            const auto&neighbors = coarse_to_coarse_neighbors[coarse];
+            for (auto neighbor = neighbors.begin(); neighbor != neighbors.end(); ++neighbor) {
+                Index vertex_2 = *neighbor;
                 // We iterate over the coarse indices in order,
                 // so if the neighboring idx is lower then the current coarseIdx,
                 // it must have been considered before and be part of a triangle.
-                if (v2Idx < coarseIdx) continue;
-                for (auto it2 = std::next(it); it2 != neighborsLists[coarseIdx].end(); it2++) {
-                    v3Idx = *it2;
-                    if (v3Idx < coarseIdx) continue;
-                    if (neighborsLists[v2Idx].find(v3Idx) != neighborsLists[v2Idx].end()) {
-                        tris.push_back({coarseIdx, v2Idx, v3Idx});
-                        Eigen::RowVector3d e12 = voronoiCenters.row(v2Idx) - voronoiCenters.row(coarseIdx);
-                        Eigen::RowVector3d e13 = voronoiCenters.row(v3Idx) - voronoiCenters.row(coarseIdx);
-                        triNormals.push_back(e12.cross(e13).normalized());
-                        connectedTris[coarseIdx].push_back(triIdx);
-                        connectedTris[v2Idx].push_back(triIdx);
-                        connectedTris[v3Idx].push_back(triIdx);
-                        ++triIdx;
-                    }
+                if (vertex_2 < coarse) continue;
+
+                // The third vertex of each triangle comes from the remaining neighbors of the coarse point
+                for (auto other_neighbor = std::next(neighbor); other_neighbor != neighbors.end(); other_neighbor++) {
+                    Index vertex_3 = *other_neighbor;
+
+                    // As with vertex 2; if this vertex has been considered before we don't make a triangle
+                    if (vertex_3 < coarse) continue;
+
+                    // Only create triangles from vertices which are neighbors
+                    // (we already know that vertex_2 and vertex_3 are neighbors of the coarse point)
+                    if (coarse_to_coarse_neighbors[vertex_2].find(vertex_3)
+                        == coarse_to_coarse_neighbors[vertex_2].end())
+                        continue;
+
+                    // Add the triangle
+                    triangles.push_back({coarse, vertex_2, vertex_3});
+
+                    // Prodce a normal for the triangle
+                    Eigen::RowVector3d e12 = coarse_points.row(vertex_2) - coarse_points.row(coarse);
+                    Eigen::RowVector3d e13 = coarse_points.row(vertex_3) - coarse_points.row(coarse);
+                    triangle_normals.push_back(e12.cross(e13).normalized());
+
+                    // Register the triangle with all the vertices it touches
+                    connected_triangles[coarse].emplace_back(current_triangle);
+                    connected_triangles[vertex_2].emplace_back(current_triangle);
+                    connected_triangles[vertex_3].emplace_back(current_triangle);
+
+                    ++current_triangle;
                 }
             }
         }
-        tris.shrink_to_fit();
-        triNormals.shrink_to_fit();
+        triangles.shrink_to_fit();
+        triangle_normals.shrink_to_fit();
 
         // List of triplets to build prolongation operator U
         std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
@@ -165,162 +183,190 @@ namespace GravoMG {
         int fallbackCount = 0;
 
         // Iterate over each point
-        for (size_t fineIdx = 0; fineIdx < points.rows(); ++fineIdx) {
-            Eigen::RowVector3d finePoint = points.row(fineIdx);
-            size_t coarseIdx = nearestSources[fineIdx];
-            Eigen::RowVector3d coarsePoint = voronoiCenters.row(coarseIdx);
-            std::vector<double> weights;
+        for (Index fine = 0; fine < fine_points.rows(); ++fine) {
+            Eigen::RowVector3d fine_point = fine_points.row(fine);
+            Index coarse = fine_to_nearest_coarse[fine];
+            Eigen::RowVector3d coarse_point = coarse_points.row(coarse);
 
             // Exact matches get a weight of 1.0 (if in nested mode)
-            if (nested && samples[nearestSources[fineIdx]] == fineIdx) {
-                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, 1.));
+            if (nested && coarse_samples[fine_to_nearest_coarse[fine]] == fine) {
+                AllTriplet.emplace_back(fine, coarse, 1.);
                 continue;
             }
 
             // If the coarse point has no neighbors,
             // set the weight to 1 for the coarse point.
-            if (neighborsLists[coarseIdx].empty()) {
+            if (coarse_to_coarse_neighbors[coarse].empty()) {
                 // todo: this should never happen!
-                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, 1.));
-            } else if (neighborsLists[coarseIdx].size() == 1) {
+                AllTriplet.emplace_back(fine, coarse, 1.);
+            } else if (coarse_to_coarse_neighbors[coarse].size() == 1) {
                 // If the coarse point only has one neighbor, no triangle can be created.
                 // Thus, the weights are distributed w.r.t. the distance to each coarse point.
-                size_t neighIdx = *neighborsLists[coarseIdx].begin();
-                Eigen::RowVector3d neighPoint = voronoiCenters.row(neighIdx);
+                Index neighbor = *coarse_to_coarse_neighbors[coarse].begin();
+                Eigen::RowVector3d neighbor_point = coarse_points.row(neighbor);
 
                 // get the distance to the two neighboring centroids
-                Eigen::RowVector3d e12 = neighPoint - coarsePoint;
-                double e12Length = max(e12.norm(), 1e-8);
-                double w2 = (points.row(fineIdx) - coarsePoint).dot(e12.normalized()) / e12Length;
-                w2 = min(max(w2, 0.), 1.);
-                double w1 = 1 - w2;
+                Eigen::RowVector3d coarse_to_neighbor = neighbor_point - coarse_point;
+                Eigen::RowVector3d coarse_to_fine = fine_points.row(fine) - coarse_point;
+                double coarse_to_neighbor_length = max(coarse_to_neighbor.norm(), 1e-8);
+                double neighbor_weight = (coarse_to_fine).dot(coarse_to_neighbor.normalized())
+                                         / coarse_to_neighbor_length;
+                neighbor_weight = std::clamp(neighbor_weight, 0.0, 1.0);
+                double coarse_weight = 1 - neighbor_weight;
 
-                switch (weightingScheme) {
+                std::vector<double> weights;
+                switch (weighting_scheme) {
                     case BARYCENTRIC:
-                        AllTriplet.emplace_back(fineIdx, coarseIdx, w1);
-                        AllTriplet.emplace_back(fineIdx, neighIdx, w2);
+                        AllTriplet.emplace_back(fine, coarse, coarse_weight);
+                        AllTriplet.emplace_back(fine, neighbor, neighbor_weight);
                         break;
                     case UNIFORM:
                         weights = uniformWeights(2);
-                        AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
-                        AllTriplet.emplace_back(fineIdx, neighIdx, weights[1]);
+                        AllTriplet.emplace_back(fine, coarse, weights[0]);
+                        AllTriplet.emplace_back(fine, neighbor, weights[1]);
                         break;
                     case INVDIST:
-                        std::vector<size_t> endPoints = {coarseIdx, neighIdx};
-                        weights = inverseDistanceWeights(voronoiCenters, finePoint, endPoints);
-                        AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
-                        AllTriplet.emplace_back(fineIdx, neighIdx, weights[1]);
+                        std::vector<Index> endPoints = {coarse, neighbor};
+                        weights = inverseDistanceWeights(coarse_points, fine_point, endPoints);
+                        AllTriplet.emplace_back(fine, coarse, weights[0]);
+                        AllTriplet.emplace_back(fine, neighbor, weights[1]);
                         break;
                 }
             } else {
-                // Only keep triangle with minimum distance
-                double minDistToTriangle = std::numeric_limits<double>::max();
-                Eigen::RowVector3d minBary = {0., 0., 0.};
-                std::vector<size_t> minTri;
-                bool triFound = false;
+                // This fine point's coarse parent has at least two neighbors, so we can use a triangle
+
+                // Only keep the triangle with the minimum distance
+                double distance_to_chosen_triangle = std::numeric_limits<double>::max();
+                Eigen::RowVector3d chosen_triangle_barycenter = {0., 0., 0.};
+                Triangle chosen_triangle;
+                bool found_triangle = false;
 
                 // Values are positive if inside and negative if not
                 // Float value represents distance
-                std::map<size_t, float> insideEdge;
+                // todo: I don't know if I understand the role of this
+                std::map<Index, float> distances_to_edges;
 
                 // Iterate over all triangles
-                for (size_t triIdx: connectedTris[coarseIdx]) {
-                    std::vector<size_t> tri = tris[triIdx];
-                    // Make sure that the coarseIdx is in position 0, while keeping orientation
-                    while (tri[0] != coarseIdx) std::rotate(tri.begin(), tri.begin() + 1, tri.end());
+                for (size_t t: connected_triangles[coarse]) {
+                    auto triangle = triangles[t];
+                    auto triangle_normal = triangle_normals[t];
 
-                    Eigen::RowVector3d bary = {0., 0., 0.};
+                    // Rotate the triangle until the coarse index is in position 0
+                    while (triangle[0] != coarse) std::rotate(triangle.begin(), triangle.begin() + 1, triangle.end());
+
+                    Eigen::RowVector3d barycenter = {0., 0., 0.};
                     // If the triangle contains the point, the distance is positive, else it's negative
-                    double distToTriangle = inTriangle(finePoint, tri, triNormals[triIdx], voronoiCenters, bary,
-                                                       insideEdge);
-                    if (distToTriangle >= 0. && distToTriangle < minDistToTriangle) {
-                        triFound = true;
-                        minDistToTriangle = distToTriangle;
-                        minTri = tri;
-                        minBary = bary;
+                    double distance_to_triangle = inTriangle(
+                        fine_point, triangle,
+                        triangle_normal, coarse_points,
+                        barycenter, distances_to_edges
+                    );
+
+                    // If we've discovered a closer triangle, update the selection
+                    if (distance_to_triangle >= 0. && distance_to_triangle < distance_to_chosen_triangle) {
+                        found_triangle = true;
+                        distance_to_chosen_triangle = distance_to_triangle;
+                        chosen_triangle = triangle;
+                        chosen_triangle_barycenter = barycenter;
                         break;
                     }
                 }
 
-                if (triFound) {
-                    switch (weightingScheme) {
+                // If we managed to find a triangle, we can apply our weighting scheme
+                // (otherwise we'll need to use a fallback, such as the nearest edge or the three nearest points)
+                if (found_triangle) {
+                    std::vector<double> weights;
+                    switch (weighting_scheme) {
                         case BARYCENTRIC:
-                            AllTriplet.emplace_back(fineIdx, minTri[0], minBary(0));
-                            AllTriplet.emplace_back(fineIdx, minTri[1], minBary(1));
-                            AllTriplet.emplace_back(fineIdx, minTri[2], minBary(2));
+                            AllTriplet.emplace_back(fine, chosen_triangle[0], chosen_triangle_barycenter(0));
+                            AllTriplet.emplace_back(fine, chosen_triangle[1], chosen_triangle_barycenter(1));
+                            AllTriplet.emplace_back(fine, chosen_triangle[2], chosen_triangle_barycenter(2));
                             break;
                         case UNIFORM:
                             weights = uniformWeights(3);
-                            AllTriplet.emplace_back(fineIdx, minTri[0], weights[0]);
-                            AllTriplet.emplace_back(fineIdx, minTri[1], weights[1]);
-                            AllTriplet.emplace_back(fineIdx, minTri[2], weights[2]);
+                            AllTriplet.emplace_back(fine, chosen_triangle[0], weights[0]);
+                            AllTriplet.emplace_back(fine, chosen_triangle[1], weights[1]);
+                            AllTriplet.emplace_back(fine, chosen_triangle[2], weights[2]);
                             break;
                         case INVDIST:
-                            weights = inverseDistanceWeights(voronoiCenters, finePoint, minTri);
-                            AllTriplet.emplace_back(fineIdx, minTri[0], weights[0]);
-                            AllTriplet.emplace_back(fineIdx, minTri[1], weights[1]);
-                            AllTriplet.emplace_back(fineIdx, minTri[2], weights[2]);
+                            weights = inverseDistanceWeights(coarse_points, fine_point, chosen_triangle);
+                            AllTriplet.emplace_back(fine, chosen_triangle[0], weights[0]);
+                            AllTriplet.emplace_back(fine, chosen_triangle[1], weights[1]);
+                            AllTriplet.emplace_back(fine, chosen_triangle[2], weights[2]);
                             break;
                     }
                 } else {
-                    bool edgeFound = false;
-                    double minEdge = std::numeric_limits<double>::max();
-                    size_t minEdgeIdx = 0;
-                    for (const auto&element: insideEdge) {
-                        const auto&key = element.first;
-                        const auto&value = element.second;
-                        if (value >= 0. && value < minEdge) {
-                            edgeFound = true;
-                            minEdge = value;
-                            minEdgeIdx = key;
+                    // First fallback: attempt to find the nearest edge, and weigh by distance along that edge
+
+                    // Find the closest edge to this point
+                    // One vertex of the edge is the coarse index, so we only need to choose the other vertex
+                    bool found_edge = false;
+                    double distance_to_chosen_edge = std::numeric_limits<double>::max();
+                    Index chosen_edge = 0;
+                    for (const auto&[edge, distance]: distances_to_edges) {
+                        if (distance >= 0. && distance < distance_to_chosen_edge) {
+                            found_edge = true;
+                            distance_to_chosen_edge = distance;
+                            chosen_edge = edge;
                             break;
                         }
                     }
-                    if (edgeFound) {
+                    if (found_edge) {
                         ++edgesfound;
-                        Eigen::RowVector3d p2 = voronoiCenters.row(minEdgeIdx);
-                        Eigen::RowVector3d e12 = p2 - coarsePoint;
+                        Eigen::RowVector3d p2 = coarse_points.row(chosen_edge);
+                        Eigen::RowVector3d e12 = p2 - coarse_point;
                         double e12Length = max(e12.norm(), 1e-8);
-                        double w2 = (finePoint - coarsePoint).dot(e12.normalized()) / e12Length;
+                        double w2 = (fine_point - coarse_point).dot(e12.normalized()) / e12Length;
                         w2 = min(max(w2, 0.), 1.);
                         double w1 = 1. - w2;
 
-                        switch (weightingScheme) {
+                        std::vector<double> weights;
+                        switch (weighting_scheme) {
                             case BARYCENTRIC:
-                                AllTriplet.emplace_back(fineIdx, coarseIdx, w1);
-                                AllTriplet.emplace_back(fineIdx, minEdgeIdx, w2);
+                                AllTriplet.emplace_back(fine, coarse, w1);
+                                AllTriplet.emplace_back(fine, chosen_edge, w2);
                                 break;
                             case UNIFORM:
                                 weights = uniformWeights(2);
-                                AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
-                                AllTriplet.emplace_back(fineIdx, minEdgeIdx, weights[1]);
+                                AllTriplet.emplace_back(fine, coarse, weights[0]);
+                                AllTriplet.emplace_back(fine, chosen_edge, weights[1]);
                                 break;
                             case INVDIST:
-                                std::vector<size_t> endPointsEdge = {coarseIdx, minEdgeIdx};
-                                weights = inverseDistanceWeights(voronoiCenters, finePoint, endPointsEdge);
-                                AllTriplet.emplace_back(fineIdx, coarseIdx, weights[0]);
-                                AllTriplet.emplace_back(fineIdx, minEdgeIdx, weights[1]);
+                                std::array<Index, 2> edge = {coarse, chosen_edge};
+                                weights = inverseDistanceWeights(coarse_points, fine_point, edge);
+                                AllTriplet.emplace_back(fine, coarse, weights[0]);
+                                AllTriplet.emplace_back(fine, chosen_edge, weights[1]);
                                 break;
                         }
                     } else {
-                        // Use closest three
-                        std::vector<size_t> prolongFrom(3);
-                        prolongFrom[0] = coarseIdx;
+                        // Second fallback: use weights based on the nearest three coarse points
 
-                        std::vector<VertexPair> pointsDistances;
-                        for (size_t j = 0; j < edges.cols(); ++j) {
-                            size_t neighIdx = edges(coarseIdx, j);
-                            if (neighIdx < 0 || neighIdx == coarseIdx) continue;
-                            VertexPair vp = {neighIdx, (finePoint - voronoiCenters.row(neighIdx)).norm()};
-                            pointsDistances.push_back(vp);
+                        // The first of the three is going to be the nearest coarse point
+                        Triangle nearest_coarse_triangle;
+                        nearest_coarse_triangle[0] = coarse;
+
+                        // Find the distances of all the points
+                        std::vector<VertexPair> coarse_distances;
+                        for (Index neighbor: coarse_edges.row(coarse)) {
+                            // Skip dummy neighbors & self connection
+                            if (neighbor < 0 || neighbor == coarse) continue;
+
+                            // Add this coarse distance to the list
+                            auto distance_to_fine = (fine_point - coarse_points.row(neighbor)).norm();
+                            coarse_distances.emplace_back(neighbor, distance_to_fine);
                         }
-                        std::sort(pointsDistances.begin(), pointsDistances.end(), std::less<VertexPair>());
+                        // Sort the coarse points by distance
+                        std::sort(coarse_distances.begin(), coarse_distances.end(), std::less<>());
+                        // Take the next two closest points (after the one we've already chosen) to complee our triangle
                         for (int j = 1; j < 3; ++j) {
-                            prolongFrom[j] = pointsDistances[j - 1].vId;
+                            nearest_coarse_triangle[j] = coarse_distances[j - 1].vId;
                         }
-                        std::vector<double> weights = inverseDistanceWeights(voronoiCenters, finePoint, prolongFrom);
-                        for (int j = 0; j < prolongFrom.size(); j++) {
-                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, prolongFrom[j], weights[j]));
+
+                        // Use inverse distance weights
+                        // todo: do the other schemes not make sense here?
+                        auto weights = inverseDistanceWeights(coarse_points, fine_point, nearest_coarse_triangle);
+                        for (int j = 0; j < nearest_coarse_triangle.size(); j++) {
+                            AllTriplet.emplace_back(fine, nearest_coarse_triangle[j], weights[j]);
                         }
                         ++fallbackCount;
                     }
@@ -328,395 +374,25 @@ namespace GravoMG {
                 }
             }
         }
-        if (verbose) cout << "Percentage of fallback: " << (double)fallbackCount / (double)points.rows() * 100 << endl;
+        if (verbose)
+            cout << "Percentage of fallback: " << (double)fallbackCount / (double)fine_points.rows() * 100 <<
+                    endl;
 
         // The matrix U maps between fine points and coarse
-        Eigen::SparseMatrix<double> ULevel;
-        ULevel.resize(points.rows(), voronoiCenters.rows());
-        ULevel.setFromTriplets(AllTriplet.begin(), AllTriplet.end());
+        Eigen::SparseMatrix<double> U;
+        U.resize(fine_points.rows(), coarse_points.rows());
+        U.setFromTriplets(AllTriplet.begin(), AllTriplet.end());
 
-        // todo
-        return {};
-    }
-
-
-    std::vector<Eigen::SparseMatrix<double>> constructProlongations(
-        Eigen::MatrixXd points,
-        double ratio, bool nested, int lowBound,
-        Sampling samplingStrategy, Weighting weightingScheme,
-        bool verbose
-    ) {
-        // Prolongation operators
-        std::vector<Eigen::SparseMatrix<double>> U;
-
-        // Degrees of freedom per level
-        std::vector<size_t> DoF;
-
-        // Sampled points (per level)
-        std::vector<std::vector<size_t>> samples;
-
-        // Nearest source for every given point (per level)
-        std::vector<std::vector<size_t>> nearestSource;
-
-        // Create prolongation operator for level k+1 to k
-        // Points in current level
-        Eigen::MatrixXd levelPoints = std::move(points);
-        // Neighborhood data structure
-        Eigen::MatrixXi neighLevelK;
-
-        // Compute initial radius
-        double densityRatio = std::sqrt(ratio);
-        int nLevel1 = int(double(levelPoints.rows()) / ratio);
-
-        std::random_device rd;
-        std::default_random_engine generator(rd());
-
-        // For each level
-        int k = 0;
-        DoF.clear();
-        DoF.shrink_to_fit();
-        DoF.push_back(levelPoints.rows());
-        while (levelPoints.rows() > lowBound && k < 10) {
-            double radius = std::cbrt(ratio) * averageEdgeLength(levelPoints, neighLevelK);
-
-            // Data structure for neighbors inside level k
-            std::vector<std::set<int>> neighborsLists;
-
-            // List of triplets to build prolongation operator U
-            std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
-
-            // The nearest coarse point for each fine point and the distances computed
-            Eigen::VectorXd D(levelPoints.rows());
-            D.setConstant(std::numeric_limits<double>::max());
-            nearestSource.emplace_back(levelPoints.rows());
-
-            // -- Sample a subset for level k + 1
-            if (verbose) printf("__Constructing Prolongation Operator for level = %d using closest triangle. \n", k);
-
-            // Sample points that will be part of the coarser level with Poisson disk sampling
-            if (verbose) std::cout << "Obtaining subset from the finer level\n";
-
-
-            switch (samplingStrategy) {
-                case FASTDISK:
-                    samples.push_back(fastDiscSample(levelPoints, neighLevelK, radius));
-                    DoF.push_back(samples[k].size());
-                    break;
-                case RANDOM:
-                    DoF.push_back(DoF[k] / ratio);
-                    samples.emplace_back(DoF[k]);
-                    std::iota(samples[k].begin(), samples[k].end(), 0);
-                    std::shuffle(samples[k].begin(), samples[k].end(), generator);
-                    samples[k].resize(DoF[k + 1]);
-                    break;
-                case MIS:
-                    samples.push_back(maximumDeltaIndependentSetWithDistances(
-                        levelPoints, neighLevelK,
-                        radius, D, nearestSource[k]
-                    ));
-                    DoF.push_back(samples[k].size());
-                    break;
-            }
-
-            if (samples[k].size() < lowBound) {
-                nearestSource.pop_back();
-                break;
-            }
-
-            if (verbose) cout << "Actual number found: " << samples[k].size() << endl;
-            DoF[k + 1] = samples[k].size();
-
-            // Compute distance from fine points to coarse points and get the closest coarse point
-            // using distances from MIS if computed before
-            constructDijkstraWithCluster(levelPoints, samples[k], neighLevelK, D,
-                                         nearestSource[k]); // Stores result in nearestSource[k]
-
-            // Create neighborhood for the next level
-            neighborsLists.resize(DoF[k + 1]);
-            for (int fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
-                for (int j = 0; j < neighLevelK.cols(); ++j) {
-                    int neighIdx = neighLevelK(fineIdx, j);
-                    if (neighIdx < 0) break;
-                    if (nearestSource[k][fineIdx] != nearestSource[k][neighIdx]) {
-                        neighborsLists[nearestSource[k][fineIdx]].insert(nearestSource[k][neighIdx]);
-                    }
-                }
-            }
-
-            // Store in homogeneous data structure
-            std::size_t maxNeighNum = 0;
-            for (const auto&neighbors: neighborsLists) {
-                if (neighbors.size() > maxNeighNum) {
-                    maxNeighNum = neighbors.size();
-                }
-            }
-            neighLevelK.resize(DoF[k + 1], maxNeighNum);
-            neighLevelK.setConstant(-1);
-            for (int i = 0; i < neighborsLists.size(); ++i) {
-                neighLevelK(i, 0) = i;
-                int iCounter = 1;
-                for (int node: neighborsLists[i]) {
-                    if (node == i) continue;
-                    if (iCounter >= maxNeighNum) break;
-                    neighLevelK(i, iCounter) = node;
-                    iCounter++;
-                }
-            }
-
-            if (verbose) std::cout << "Setting up the point locations for the next level\n";
-
-            // Setting up the DoF for the next level
-            // tempPoints are the centers of the voronoi cells, each row for each voronoi cells
-            Eigen::MatrixXd tempPoints(DoF[k + 1], levelPoints.cols());
-            tempPoints.setZero();
-            if (nested) {
-                for (int coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
-                    tempPoints.row(coarseIdx) = levelPoints.row(samples[k][coarseIdx]);
-                }
-            } else {
-                std::vector<int> clusterSizes(DoF[k + 1]);
-                for (size_t fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
-                    size_t coarseIdx = nearestSource[k][fineIdx];
-                    tempPoints.row(coarseIdx) = tempPoints.row(coarseIdx) + levelPoints.row(fineIdx);
-                    ++clusterSizes[coarseIdx];
-                }
-                for (size_t coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
-                    if (clusterSizes[coarseIdx] == 1) {
-                        tempPoints.row(coarseIdx) = levelPoints.row(samples[k][coarseIdx]);
-                        for (size_t neighIdx: neighborsLists[coarseIdx]) {
-                            tempPoints.row(coarseIdx) =
-                                    tempPoints.row(coarseIdx) + levelPoints.row(samples[k][neighIdx]);
-                        }
-                        tempPoints.row(coarseIdx) = tempPoints.row(coarseIdx) / (neighborsLists[coarseIdx].size() + 1.);
-                    } else {
-                        tempPoints.row(coarseIdx) = tempPoints.row(coarseIdx) / clusterSizes[coarseIdx];
-                    }
-                }
-            }
-
-
-            // Create triangles for this level based on Voronoi cells
-            std::vector<std::vector<size_t>> tris;
-            tris.reserve(DoF[k + 1] * maxNeighNum);
-            std::vector<std::vector<size_t>> connectedTris(DoF[k + 1]);
-            std::vector<Eigen::RowVector3d> triNormals;
-            triNormals.reserve(DoF[k + 1] * maxNeighNum);
-            size_t triIdx = 0;
-            for (size_t coarseIdx = 0; coarseIdx < DoF[k + 1]; ++coarseIdx) {
-                // Iterate over delaunay triangles
-                size_t v2Idx, v3Idx;
-                for (auto it = neighborsLists[coarseIdx].begin(); it != neighborsLists[coarseIdx].end(); it++) {
-                    v2Idx = *it;
-                    // We iterate over the coarse indices in order,
-                    // so if the neighboring idx is lower then the current coarseIdx,
-                    // it must have been considered before and be part of a triangle.
-                    if (v2Idx < coarseIdx) continue;
-                    for (auto it2 = std::next(it); it2 != neighborsLists[coarseIdx].end(); it2++) {
-                        v3Idx = *it2;
-                        if (v3Idx < coarseIdx) continue;
-                        if (neighborsLists[v2Idx].find(v3Idx) != neighborsLists[v2Idx].end()) {
-                            tris.push_back({coarseIdx, v2Idx, v3Idx});
-                            Eigen::RowVector3d e12 = tempPoints.row(v2Idx) - tempPoints.row(coarseIdx);
-                            Eigen::RowVector3d e13 = tempPoints.row(v3Idx) - tempPoints.row(coarseIdx);
-                            triNormals.push_back(e12.cross(e13).normalized());
-                            connectedTris[coarseIdx].push_back(triIdx);
-                            connectedTris[v2Idx].push_back(triIdx);
-                            connectedTris[v3Idx].push_back(triIdx);
-                            ++triIdx;
-                        }
-                    }
-                }
-            }
-            tris.shrink_to_fit();
-            triNormals.shrink_to_fit();
-
-
-            // Create local triangulation on each cluster (centralized at sample i)
-            int notrisfound = 0;
-            int edgesfound = 0;
-            int fallbackCount = 0;
-
-            for (size_t fineIdx = 0; fineIdx < DoF[k]; ++fineIdx) {
-                Eigen::RowVector3d finePoint = levelPoints.row(fineIdx);
-                size_t coarseIdx = nearestSource[k][fineIdx];
-                Eigen::RowVector3d coarsePoint = tempPoints.row(coarseIdx);
-                std::vector<double> weights;
-
-                if (nested && samples[k][nearestSource[k][fineIdx]] == fineIdx) {
-                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, 1.));
-                    continue;
-                }
-
-                if (neighborsLists[coarseIdx].empty()) {
-                    // If the coarse point has no neighbors,
-                    // set the weight to 1 for the coarse point.
-                    // Note: this should not happen.
-                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, 1.));
-                } else if (neighborsLists[coarseIdx].size() == 1) {
-                    // If the coarse point only has one neighbor, no triangle can be created.
-                    // Thus, the weights are distributed w.r.t. the distance to each coarse point.
-                    size_t neighIdx = *neighborsLists[coarseIdx].begin();
-                    Eigen::RowVector3d neighPoint = tempPoints.row(neighIdx);
-
-                    // get the distance to the two neighboring centroids
-                    Eigen::RowVector3d e12 = neighPoint - coarsePoint;
-                    double e12Length = max(e12.norm(), 1e-8);
-                    double w2 = (levelPoints.row(fineIdx) - coarsePoint).dot(e12.normalized()) / e12Length;
-                    w2 = min(max(w2, 0.), 1.);
-                    double w1 = 1 - w2;
-
-                    switch (weightingScheme) {
-                        case BARYCENTRIC:
-                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, w1));
-                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, neighIdx, w2));
-                            break;
-                        case UNIFORM:
-                            weights = uniformWeights(2);
-                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, weights[0]));
-                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, neighIdx, weights[1]));
-                            break;
-                        case INVDIST:
-                            std::vector<size_t> endPoints = {coarseIdx, neighIdx};
-                            weights = inverseDistanceWeights(tempPoints, finePoint, endPoints);
-                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, weights[0]));
-                            AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, neighIdx, weights[1]));
-                            break;
-                    }
-                } else {
-                    // Only keep triangle with minimum distance
-                    double minDistToTriangle = std::numeric_limits<double>::max();
-                    Eigen::RowVector3d minBary = {0., 0., 0.};
-                    std::vector<size_t> minTri;
-                    bool triFound = false;
-
-                    // Values are positive if inside and negative if not
-                    // Float value represents distance
-                    std::map<size_t, float> insideEdge;
-
-                    // Iterate over all triangles
-                    for (size_t triIdx: connectedTris[coarseIdx]) {
-                        std::vector<size_t> tri = tris[triIdx];
-                        // Make sure that the coarseIdx is in position 0, while keeping orientation
-                        while (tri[0] != coarseIdx) std::rotate(tri.begin(), tri.begin() + 1, tri.end());
-
-                        Eigen::RowVector3d bary = {0., 0., 0.};
-                        // If the triangle contains the point, the distance is positive, else it's negative
-                        double distToTriangle = inTriangle(finePoint, tri, triNormals[triIdx], tempPoints, bary,
-                                                           insideEdge);
-                        if (distToTriangle >= 0. && distToTriangle < minDistToTriangle) {
-                            triFound = true;
-                            minDistToTriangle = distToTriangle;
-                            minTri = tri;
-                            minBary = bary;
-                            break;
-                        }
-                    }
-
-                    if (triFound) {
-                        switch (weightingScheme) {
-                            case BARYCENTRIC:
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[0], minBary(0)));
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[1], minBary(1)));
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[2], minBary(2)));
-                                break;
-                            case UNIFORM:
-                                weights = uniformWeights(3);
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[0], weights[0]));
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[1], weights[1]));
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[2], weights[2]));
-                                break;
-                            case INVDIST:
-                                weights = inverseDistanceWeights(tempPoints, finePoint, minTri);
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[0], weights[0]));
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[1], weights[1]));
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minTri[2], weights[2]));
-                                break;
-                        }
-                    } else {
-                        bool edgeFound = false;
-                        double minEdge = std::numeric_limits<double>::max();
-                        size_t minEdgeIdx = 0;
-                        for (const auto&element: insideEdge) {
-                            const auto&key = element.first;
-                            const auto&value = element.second;
-                            if (value >= 0. && value < minEdge) {
-                                edgeFound = true;
-                                minEdge = value;
-                                minEdgeIdx = key;
-                                break;
-                            }
-                        }
-                        if (edgeFound) {
-                            ++edgesfound;
-                            Eigen::RowVector3d p2 = tempPoints.row(minEdgeIdx);
-                            Eigen::RowVector3d e12 = p2 - coarsePoint;
-                            double e12Length = max(e12.norm(), 1e-8);
-                            double w2 = (finePoint - coarsePoint).dot(e12.normalized()) / e12Length;
-                            w2 = min(max(w2, 0.), 1.);
-                            double w1 = 1. - w2;
-
-                            switch (weightingScheme) {
-                                case BARYCENTRIC:
-                                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, w1));
-                                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minEdgeIdx, w2));
-                                    break;
-                                case UNIFORM:
-                                    weights = uniformWeights(2);
-                                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, weights[0]));
-                                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minEdgeIdx, weights[1]));
-                                    break;
-                                case INVDIST:
-                                    std::vector<size_t> endPointsEdge = {coarseIdx, minEdgeIdx};
-                                    weights = inverseDistanceWeights(tempPoints, finePoint, endPointsEdge);
-                                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, coarseIdx, weights[0]));
-                                    AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, minEdgeIdx, weights[1]));
-                                    break;
-                            }
-                        } else {
-                            // Use closest three
-                            std::vector<size_t> prolongFrom(3);
-                            prolongFrom[0] = coarseIdx;
-
-                            std::vector<VertexPair> pointsDistances;
-                            for (int j = 0; j < neighLevelK.cols(); ++j) {
-                                size_t neighIdx = neighLevelK(coarseIdx, j);
-                                if (neighIdx < 0 || neighIdx == coarseIdx) continue;
-                                VertexPair vp = {neighIdx, (finePoint - tempPoints.row(neighIdx)).norm()};
-                                pointsDistances.push_back(vp);
-                            }
-                            std::sort(pointsDistances.begin(), pointsDistances.end(), std::less<VertexPair>());
-                            for (size_t j = 1; j < 3; ++j) {
-                                prolongFrom[j] = pointsDistances[j - 1].vId;
-                            }
-                            std::vector<double> weights = inverseDistanceWeights(tempPoints, finePoint, prolongFrom);
-                            for (int j = 0; j < prolongFrom.size(); j++) {
-                                AllTriplet.push_back(Eigen::Triplet<double>(fineIdx, prolongFrom[j], weights[j]));
-                            }
-                            ++fallbackCount;
-                        }
-                        ++notrisfound;
-                    }
-                }
-            }
-            if (verbose) cout << "Percentage of fallback: " << (double)fallbackCount / (double)DoF[k] * 100 << endl;
-
-            levelPoints = tempPoints;
-
-            Eigen::SparseMatrix<double> ULevel;
-            ULevel.resize(DoF[k], DoF[k + 1]);
-            ULevel.setFromTriplets(AllTriplet.begin(), AllTriplet.end());
-            U.push_back(ULevel);
-            AllTriplet.clear();
-            AllTriplet.shrink_to_fit();
-            ++k;
-        }
-
+        // todo Return the following:
+        // coarse points (voronoi centers)
+        // edges in the coarse point cloud
+        // the matrix U
         return U;
     }
 
-    double inTriangle(const Eigen::RowVector3d&p, const std::vector<size_t>&tri,
+    double inTriangle(const Eigen::RowVector3d&p, std::span<Index, 3> tri,
                       const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
-                      Eigen::RowVector3d&bary, std::map<size_t, float>&insideEdge) {
+                      Eigen::RowVector3d&bary, std::map<Index, float>&insideEdge) {
         Eigen::RowVector3d v1, v2, v3;
         v1 = pos.row(tri[0]);
         v2 = pos.row(tri[1]);
@@ -760,7 +436,7 @@ namespace GravoMG {
     }
 
     std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd&pos, const Eigen::RowVector3d&p,
-                                               const std::vector<size_t>&edges) {
+                                               const std::span<Index>&edges) {
         double sumWeight = 0.;
         std::vector<double> weights(edges.size());
         for (size_t j = 0; j < edges.size(); ++j) {
@@ -773,10 +449,10 @@ namespace GravoMG {
         return weights;
     }
 
-    void constructDijkstraWithCluster(const Eigen::MatrixXd&points, const std::vector<std::size_t>&source,
-                                      const Eigen::MatrixXi&neigh, Eigen::VectorXd&D,
-                                      std::vector<size_t>&nearestSourceK) {
-        std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<VertexPair>> DistanceQueue;
+    void constructDijkstraWithCluster(const Eigen::MatrixXd&points, const std::vector<Index>&source,
+                                      const EdgeMatrix&neigh, Eigen::VectorXd&D,
+                                      vector<Index>&nearestSourceK) {
+        std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
 
         for (size_t i = 0; i < source.size(); ++i) {
@@ -794,7 +470,7 @@ namespace GravoMG {
             DistanceQueue.pop();
 
             for (size_t i = 0; i < neigh.cols(); ++i) {
-                size_t vNeigh = neigh(vp1.vId, i);
+                Index vNeigh = neigh(vp1.vId, i);
 
                 if (vNeigh >= 0) {
                     double dist, distTemp;

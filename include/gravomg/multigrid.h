@@ -3,18 +3,19 @@
 
 #include <queue>
 #include <vector>
+#include <span>
 
 #include "utility.h"
 
 /* Data structure for Priority Queue */
 struct VertexPair {
 
-    size_t vId;
+    Eigen::Index vId;
     double distance;
 
-    bool operator>(const VertexPair &ref) const { return distance > ref.distance; }
+    bool operator>(const VertexPair&ref) const { return distance > ref.distance; }
 
-    bool operator<(const VertexPair &ref) const { return distance < ref.distance; }
+    bool operator<(const VertexPair&ref) const { return distance < ref.distance; }
 };
 
 /* Enum to set solver type */
@@ -32,40 +33,36 @@ enum Weighting {
 
 namespace GravoMG {
 
+    using Eigen::Index;
+    using EdgeMatrix = Eigen::Matrix<Index, Eigen::Dynamic, Eigen::Dynamic>;
+    using Triangle = std::array<Index, 3>;
 
     static double inTriangle(
-            const Eigen::RowVector3d &p, const std::vector<size_t> &tri, const Eigen::RowVector3d &triNormal,
-            const Eigen::MatrixXd &pos, Eigen::RowVector3d &bary, std::map<size_t, float> &insideEdge
+        const Eigen::RowVector3d&p, std::span<Index, 3> tri,
+        const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
+        Eigen::RowVector3d&bary, std::map<Index, float>&insideEdge
     );
 
-    static std::vector<double> uniformWeights(const int &n_points);
+    static std::vector<double> uniformWeights(const int&n_points);
 
     static std::vector<double> inverseDistanceWeights(
-            const Eigen::MatrixXd &pos, const Eigen::RowVector3d &source, const std::vector<size_t> &edges
+        const Eigen::MatrixXd&pos, const Eigen::RowVector3d&source, const std::span<Index>&edges
     );
 
     static void constructDijkstraWithCluster(
-            const Eigen::MatrixXd &points, const std::vector<std::size_t> &source,
-            const Eigen::MatrixXi &neigh, Eigen::VectorXd &D,
-            std::vector<size_t> &nearestSourceK
+        const Eigen::MatrixXd&points, const std::vector<Index>&source,
+        const EdgeMatrix&neigh, Eigen::VectorXd&D,
+        std::vector<Index>&nearestSourceK
     );
 
-    double averageEdgeLength(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &neigh);
+    double averageEdgeLength(const Eigen::MatrixXd&pos, const Eigen::MatrixXi&neigh);
 
     Eigen::SparseMatrix<double> constructProlongation(
-            Eigen::MatrixXd points,
-            double ratio = 8.0, bool nested = false, int lowBound = 1000,
-            Sampling samplingStrategy = FASTDISK, Weighting weightingScheme = BARYCENTRIC,
-            bool verbose = false
+        Eigen::MatrixXd points,
+        double ratio = 8.0, bool nested = false, int lowBound = 1000,
+        Sampling samplingStrategy = FASTDISK, Weighting weightingScheme = BARYCENTRIC,
+        bool verbose = false
     );
-
-    std::vector<Eigen::SparseMatrix<double>> constructProlongations(
-            Eigen::MatrixXd points,
-            double ratio = 8.0, bool nested = false, int lowBound = 1000,
-            Sampling samplingStrategy = FASTDISK, Weighting weightingScheme = BARYCENTRIC,
-            bool verbose = false
-    );
-
 
 }
 

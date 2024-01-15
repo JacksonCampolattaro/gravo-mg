@@ -26,15 +26,15 @@ namespace GravoMG {
         return selection;
     }
 
-    std::vector<size_t> maximumDeltaIndependentSetWithDistances(
+    std::vector<Index> maximumDeltaIndependentSetWithDistances(
         const Eigen::MatrixXd&pos,
-        const Eigen::MatrixXi&edges,
+        const EdgeMatrix&edges,
         const double&radius,
         Eigen::VectorXd&D,
-        std::vector<size_t>&nearestSourceK
+        std::vector<Index>&nearestSourceK
     ) {
         std::vector<bool> visited(edges.rows());
-        std::vector<size_t> selection;
+        std::vector<Index> selection;
         int sampleIdx = 0;
         for (int i = 0; i < edges.rows(); ++i) {
             if (!visited[i]) {
@@ -58,8 +58,8 @@ namespace GravoMG {
         return selection;
     }
 
-    std::vector<size_t> fastDiscSample(
-        const Eigen::MatrixXd&pos, const Eigen::MatrixXi&edges, const double&radius
+    std::vector<Index> fastDiscSample(
+        const Eigen::MatrixXd&pos, const EdgeMatrix& edges, const double&radius
     ) {
         // todo: in the future it might make sense to return these!
         Eigen::VectorXd D(edges.rows());
@@ -67,7 +67,7 @@ namespace GravoMG {
         std::vector<size_t> nearestSourceK(edges.rows());
 
         std::vector<bool> visited(edges.rows());
-        std::vector<size_t> selection{};
+        std::vector<Index> selection{};
         int sampleIdx = 0;
         for (int i = 0; i < edges.rows(); ++i) {
             if (!visited[i]) {

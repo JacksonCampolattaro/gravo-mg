@@ -5,20 +5,23 @@
 
 #include <vector>
 
+#include "multigrid.h"
+
 namespace GravoMG {
 
+    using Eigen::Index;
 
     std::vector<size_t> maximumDeltaIndependentSet(
             const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius
     );
 
-    std::vector<size_t> maximumDeltaIndependentSetWithDistances(
-            const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges,
-            const double &radius,
-            Eigen::VectorXd &D, std::vector<size_t> &nearestSourceK
+    std::vector<Index> maximumDeltaIndependentSetWithDistances(
+        const Eigen::MatrixXd &pos, const EdgeMatrix&edges,
+        const double &radius,
+        Eigen::VectorXd &D, std::vector<Index>&nearestSourceK
     );
 
-    std::vector<size_t> fastDiscSample(const Eigen::MatrixXd &pos, const Eigen::MatrixXi &edges, const double &radius);
+    std::vector<Index> fastDiscSample(const Eigen::MatrixXd&pos, const EdgeMatrix& edges, const double&radius);
 }
 
 #endif //GRAVOMG_SAMPLING_H
