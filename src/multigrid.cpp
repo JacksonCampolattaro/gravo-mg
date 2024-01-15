@@ -1,4 +1,3 @@
-#define _USE_MATH_DEFINES
 
 #include "gravomg/multigrid.h"
 #include "gravomg/utility.h"
@@ -8,12 +7,112 @@
 #include <numeric>
 #include <chrono>
 
-#include <Eigen/Eigenvalues>
 #include <Eigen/Dense>
 #include <utility>
 
 namespace GravoMG {
 
+    double inTriangle(const Eigen::RowVector3d&p, std::span<Index, 3> tri,
+                      const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
+                      Eigen::RowVector3d&bary, std::map<Index, float>&insideEdge) {
+        Eigen::RowVector3d v1, v2, v3;
+        v1 = pos.row(tri[0]);
+        v2 = pos.row(tri[1]);
+        v3 = pos.row(tri[2]);
+        Eigen::RowVector3d v1ToP = p - v1;
+        Eigen::RowVector3d e12 = v2 - v1;
+        Eigen::RowVector3d e13 = v3 - v1;
+
+        double distToTriangle = (p - v1).dot(triNormal);
+        Eigen::RowVector3d pProjected = p - distToTriangle * triNormal;
+
+        double doubleArea = (v2 - v1).cross(v3 - v1).dot(triNormal);
+        bary(0) = (v3 - v2).cross(pProjected - v2).dot(triNormal) / doubleArea;
+        bary(1) = (v1 - v3).cross(pProjected - v3).dot(triNormal) / doubleArea;
+        bary(2) = 1. - bary(0) - bary(1);
+
+        if (insideEdge.find(tri[1]) == insideEdge.end()) {
+            insideEdge[tri[1]] = ((v1ToP) - ((v1ToP).dot(e12) * (e12))).norm();
+        }
+        if (insideEdge.find(tri[2]) == insideEdge.end()) {
+            insideEdge[tri[2]] = ((v1ToP) - ((v1ToP).dot(e13) * (e13))).norm();
+        }
+        if (bary(0) < 0. || bary(1) < 0.) {
+            insideEdge[tri[1]] = -1.;
+        }
+        if (bary(0) < 0. || bary(2) < 0.) {
+            insideEdge[tri[2]] = -1.;
+        }
+
+        if (bary(0) >= 0. && bary(1) >= 0. && bary(2) >= 0.) {
+            return abs(distToTriangle);
+        }
+
+        return -1.;
+    }
+
+    std::vector<double> uniformWeights(const int&n_points) {
+        std::vector<double> weights(n_points);
+        std::fill(weights.begin(), weights.end(), 1. / n_points);
+        return weights;
+    }
+
+    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd&pos, const Eigen::RowVector3d&p,
+                                               const std::span<Index>&edges) {
+        double sumWeight = 0.;
+        std::vector<double> weights(edges.size());
+        for (size_t j = 0; j < edges.size(); ++j) {
+            weights[j] = 1. / max(1e-8, (p - pos.row(edges[j])).norm());
+            sumWeight += weights[j];
+        }
+        for (size_t j = 0; j < weights.size(); ++j) {
+            weights[j] = weights[j] / sumWeight;
+        }
+        return weights;
+    }
+
+    void constructDijkstraWithCluster(const Eigen::MatrixXd&points, const std::vector<Index>&source,
+                                      const EdgeMatrix&neigh, Eigen::VectorXd&D,
+                                      vector<Index>&nearestSourceK) {
+        std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
+        if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
+
+        for (size_t i = 0; i < source.size(); ++i) {
+            D(source[i]) = 0.0;
+            VertexPair vp{source[i], D(source[i])};
+            DistanceQueue.push(vp);
+            nearestSourceK[source[i]] = i;
+        }
+
+        size_t curSource;
+        while (!DistanceQueue.empty()) {
+            VertexPair vp1 = DistanceQueue.top();
+            curSource = nearestSourceK[vp1.vId];
+            Eigen::RowVector3d vertex1 = points.row(vp1.vId);
+            DistanceQueue.pop();
+
+            for (size_t i = 0; i < neigh.cols(); ++i) {
+                Index vNeigh = neigh(vp1.vId, i);
+
+                if (vNeigh >= 0) {
+                    double dist, distTemp;
+                    Eigen::RowVector3d vertex2 = points.row(vNeigh);
+                    dist = (vertex2 - vertex1).norm();
+                    distTemp = vp1.distance + dist;
+                    if (distTemp < D(vNeigh)) {
+                        // Assign a new distance
+                        D(vNeigh) = distTemp;
+                        VertexPair v2{vNeigh, distTemp};
+                        DistanceQueue.push(v2);
+
+
+                        // Assign the nearest source to a certain point
+                        nearestSourceK[vNeigh] = curSource;
+                    }
+                }
+            }
+        }
+    }
 
     double averageEdgeLength(const Eigen::MatrixXd&pos, const EdgeMatrix&neigh) {
         double sumLength = 0;
@@ -390,105 +489,4 @@ namespace GravoMG {
         return U;
     }
 
-    double inTriangle(const Eigen::RowVector3d&p, std::span<Index, 3> tri,
-                      const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
-                      Eigen::RowVector3d&bary, std::map<Index, float>&insideEdge) {
-        Eigen::RowVector3d v1, v2, v3;
-        v1 = pos.row(tri[0]);
-        v2 = pos.row(tri[1]);
-        v3 = pos.row(tri[2]);
-        Eigen::RowVector3d v1ToP = p - v1;
-        Eigen::RowVector3d e12 = v2 - v1;
-        Eigen::RowVector3d e13 = v3 - v1;
-
-        double distToTriangle = (p - v1).dot(triNormal);
-        Eigen::RowVector3d pProjected = p - distToTriangle * triNormal;
-
-        double doubleArea = (v2 - v1).cross(v3 - v1).dot(triNormal);
-        bary(0) = (v3 - v2).cross(pProjected - v2).dot(triNormal) / doubleArea;
-        bary(1) = (v1 - v3).cross(pProjected - v3).dot(triNormal) / doubleArea;
-        bary(2) = 1. - bary(0) - bary(1);
-
-        if (insideEdge.find(tri[1]) == insideEdge.end()) {
-            insideEdge[tri[1]] = ((v1ToP) - ((v1ToP).dot(e12) * (e12))).norm();
-        }
-        if (insideEdge.find(tri[2]) == insideEdge.end()) {
-            insideEdge[tri[2]] = ((v1ToP) - ((v1ToP).dot(e13) * (e13))).norm();
-        }
-        if (bary(0) < 0. || bary(1) < 0.) {
-            insideEdge[tri[1]] = -1.;
-        }
-        if (bary(0) < 0. || bary(2) < 0.) {
-            insideEdge[tri[2]] = -1.;
-        }
-
-        if (bary(0) >= 0. && bary(1) >= 0. && bary(2) >= 0.) {
-            return abs(distToTriangle);
-        }
-
-        return -1.;
-    }
-
-    std::vector<double> uniformWeights(const int&n_points) {
-        std::vector<double> weights(n_points);
-        std::fill(weights.begin(), weights.end(), 1. / n_points);
-        return weights;
-    }
-
-    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd&pos, const Eigen::RowVector3d&p,
-                                               const std::span<Index>&edges) {
-        double sumWeight = 0.;
-        std::vector<double> weights(edges.size());
-        for (size_t j = 0; j < edges.size(); ++j) {
-            weights[j] = 1. / max(1e-8, (p - pos.row(edges[j])).norm());
-            sumWeight += weights[j];
-        }
-        for (size_t j = 0; j < weights.size(); ++j) {
-            weights[j] = weights[j] / sumWeight;
-        }
-        return weights;
-    }
-
-    void constructDijkstraWithCluster(const Eigen::MatrixXd&points, const std::vector<Index>&source,
-                                      const EdgeMatrix&neigh, Eigen::VectorXd&D,
-                                      vector<Index>&nearestSourceK) {
-        std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
-        if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
-
-        for (size_t i = 0; i < source.size(); ++i) {
-            D(source[i]) = 0.0;
-            VertexPair vp{source[i], D(source[i])};
-            DistanceQueue.push(vp);
-            nearestSourceK[source[i]] = i;
-        }
-
-        size_t curSource;
-        while (!DistanceQueue.empty()) {
-            VertexPair vp1 = DistanceQueue.top();
-            curSource = nearestSourceK[vp1.vId];
-            Eigen::RowVector3d vertex1 = points.row(vp1.vId);
-            DistanceQueue.pop();
-
-            for (size_t i = 0; i < neigh.cols(); ++i) {
-                Index vNeigh = neigh(vp1.vId, i);
-
-                if (vNeigh >= 0) {
-                    double dist, distTemp;
-                    Eigen::RowVector3d vertex2 = points.row(vNeigh);
-                    dist = (vertex2 - vertex1).norm();
-                    distTemp = vp1.distance + dist;
-                    if (distTemp < D(vNeigh)) {
-                        // Assign a new distance
-                        D(vNeigh) = distTemp;
-                        VertexPair v2{vNeigh, distTemp};
-                        DistanceQueue.push(v2);
-
-
-                        // Assign the nearest source to a certain point
-                        nearestSourceK[vNeigh] = curSource;
-                    }
-                }
-            }
-        }
-    }
 }

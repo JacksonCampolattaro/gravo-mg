@@ -22,6 +22,7 @@ namespace GravoMG {
     );
 
     std::vector<Index> fastDiscSample(const Eigen::MatrixXd&pos, const EdgeMatrix& edges, const double&radius);
+
 }
 
 #endif //GRAVOMG_SAMPLING_H

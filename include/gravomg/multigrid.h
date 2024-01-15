@@ -34,7 +34,7 @@ enum Weighting {
 namespace GravoMG {
 
     using Eigen::Index;
-    using EdgeMatrix = Eigen::Matrix<Index, Eigen::Dynamic, Eigen::Dynamic>;
+    using EdgeMatrix = Eigen::MatrixXi;
     using Triangle = std::array<Index, 3>;
 
     static double inTriangle(
@@ -58,10 +58,11 @@ namespace GravoMG {
     double averageEdgeLength(const Eigen::MatrixXd&pos, const Eigen::MatrixXi&neigh);
 
     Eigen::SparseMatrix<double> constructProlongation(
-        Eigen::MatrixXd points,
-        double ratio = 8.0, bool nested = false, int lowBound = 1000,
-        Sampling samplingStrategy = FASTDISK, Weighting weightingScheme = BARYCENTRIC,
-        bool verbose = false
+        const Eigen::MatrixXd&fine_points,
+        const EdgeMatrix&fine_edges,
+        const std::vector<Index>&coarse_samples,
+        Weighting weighting_scheme,
+        bool verbose = false, bool nested = true
     );
 
 }
