@@ -34,6 +34,7 @@ enum Weighting {
 namespace GravoMG {
 
     using Eigen::Index;
+    using PointMatrix = Eigen::MatrixXd;
     using EdgeMatrix = Eigen::MatrixXi;
     using Triangle = std::array<Index, 3>;
 
@@ -57,7 +58,7 @@ namespace GravoMG {
 
     double averageEdgeLength(const Eigen::MatrixXd&pos, const Eigen::MatrixXi&neigh);
 
-    Eigen::SparseMatrix<double> constructProlongation(
+    std::tuple<PointMatrix, EdgeMatrix, Eigen::SparseMatrix<double>> constructProlongation(
         const Eigen::MatrixXd&fine_points,
         const EdgeMatrix&fine_edges,
         const std::vector<Index>&coarse_samples,

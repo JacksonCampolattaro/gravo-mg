@@ -1,4 +1,3 @@
-
 #include "gravomg/multigrid.h"
 #include "gravomg/utility.h"
 #include "gravomg/sampling.h"
@@ -133,7 +132,7 @@ namespace GravoMG {
     }
 
 
-    Eigen::SparseMatrix<double> constructProlongation(
+    std::tuple<PointMatrix, EdgeMatrix, Eigen::SparseMatrix<double>> constructProlongation(
         const Eigen::MatrixXd&fine_points,
         const EdgeMatrix&fine_edges,
         const std::vector<Index>&coarse_samples,
@@ -371,6 +370,9 @@ namespace GravoMG {
                     }
                 }
 
+                // temporary: it seems like the fallback is never needed
+                assert(found_triangle);
+
                 // If we managed to find a triangle, we can apply our weighting scheme
                 // (otherwise we'll need to use a fallback, such as the nearest edge or the three nearest points)
                 if (found_triangle) {
@@ -486,7 +488,7 @@ namespace GravoMG {
         // coarse points (voronoi centers)
         // edges in the coarse point cloud
         // the matrix U
-        return U;
+        return {coarse_points, coarse_edges, U};
     }
 
 }
