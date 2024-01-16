@@ -11,9 +11,9 @@
 
 namespace GravoMG {
 
-    double inTriangle(const Eigen::RowVector3d&p, std::span<Index, 3> tri,
-                      const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
-                      Eigen::RowVector3d&bary, std::map<Index, float>&insideEdge) {
+    double inTriangle(const Eigen::RowVector3d& p, std::span<Index, 3> tri,
+                      const Eigen::RowVector3d& triNormal, const Eigen::MatrixXd& pos,
+                      Eigen::RowVector3d& bary, std::map<Index, float>& insideEdge) {
         Eigen::RowVector3d v1, v2, v3;
         v1 = pos.row(tri[0]);
         v2 = pos.row(tri[1]);
@@ -50,14 +50,14 @@ namespace GravoMG {
         return -1.;
     }
 
-    std::vector<double> uniformWeights(const int&n_points) {
+    std::vector<double> uniformWeights(const int& n_points) {
         std::vector<double> weights(n_points);
         std::fill(weights.begin(), weights.end(), 1. / n_points);
         return weights;
     }
 
-    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd&pos, const Eigen::RowVector3d&p,
-                                               const std::span<Index>&edges) {
+    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd& pos, const Eigen::RowVector3d& p,
+                                               const std::span<Index>& edges) {
         double sumWeight = 0.;
         std::vector<double> weights(edges.size());
         for (size_t j = 0; j < edges.size(); ++j) {
@@ -70,9 +70,9 @@ namespace GravoMG {
         return weights;
     }
 
-    void constructDijkstraWithCluster(const Eigen::MatrixXd&points, const std::vector<Index>&source,
-                                      const EdgeMatrix&neigh, Eigen::VectorXd&D,
-                                      vector<Index>&nearestSourceK) {
+    void constructDijkstraWithCluster(const Eigen::MatrixXd& points, const std::vector<Index>& source,
+                                      const EdgeMatrix& neigh, Eigen::VectorXd& D,
+                                      vector<Index>& nearestSourceK) {
         std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
 
@@ -113,7 +113,7 @@ namespace GravoMG {
         }
     }
 
-    double averageEdgeLength(const Eigen::MatrixXd&pos, const EdgeMatrix&neigh) {
+    double averageEdgeLength(const Eigen::MatrixXd& pos, const EdgeMatrix& neigh) {
         double sumLength = 0;
         int nEdges = 0;
         for (size_t i = 0; i < pos.rows(); ++i) {
@@ -131,11 +131,99 @@ namespace GravoMG {
         return sumLength / (double)nEdges;
     }
 
+    std::vector<std::set<Index>> extractCoarseEdges(
+        const Eigen::MatrixXd& fine_points,
+        const EdgeMatrix& fine_edges,
+        const std::vector<Index>& coarse_samples,
+        const std::vector<Index>& fine_to_nearest_coarse
+    ) {
+
+        std::vector<std::set<Index>> coarse_to_coarse_neighbors{coarse_samples.size()};
+        for (Index fine = 0; fine < fine_points.rows(); ++fine) {
+            for (auto& neighbor: fine_edges.row(fine)) {
+                if (neighbor < 0) break;
+                // If the two points belong to different parent points
+                if (fine_to_nearest_coarse[fine] != fine_to_nearest_coarse[neighbor]) {
+                    // Ensure the other point's parent is in the neighbor list
+                    coarse_to_coarse_neighbors[fine_to_nearest_coarse[fine]].insert(fine_to_nearest_coarse[neighbor]);
+                }
+            }
+        }
+
+        return coarse_to_coarse_neighbors;
+
+    }
+
+    EdgeMatrix toPaddedEdgeMatrix(const std::vector<std::set<Index>>& edges) {
+        // Convert the set-based neighbor list to a standard homogenuous table
+
+        // Prepare a matrix with room for the largest edge set
+        const auto max_num_neighbors = std::transform_reduce(
+                                           edges.begin(), edges.end(),
+                                           std::size_t{0},
+                                           [](const auto& a, const auto& b) { return std::max(a, b); },
+                                           [](const auto& set) { return set.size(); }
+                                       ) + 1;
+        EdgeMatrix edge_matrix{edges.size(), max_num_neighbors};
+
+        // Unused slots are set to -1
+        edge_matrix.setConstant(-1);
+
+        // Set edges row by row
+        for (Index i = 0; i < edge_matrix.rows(); ++i) {
+            // Add self-connection in the first position
+            edge_matrix(i, 0) = i;
+
+            // Add all connections from the set
+            Index j{1};
+            for (const auto neighbor: edges[i]) {
+                if (neighbor == i) continue;
+                edge_matrix(i, j++) = neighbor;
+            }
+        }
+
+        return edge_matrix;
+    }
+
+    PointMatrix coarseFromMeanOfFineChildren(
+        const PointMatrix& fine_points,
+        const EdgeMatrix& fine_edges,
+        const std::vector<Index>& fine_to_nearest_coarse,
+        std::size_t num_coarse_points
+    ) {
+
+        // Find the children associated with each coarse point
+        std::vector<std::set<Index>> associated_children{num_coarse_points};
+        for (Index fine = 0; fine < fine_to_nearest_coarse.size(); ++fine)
+            associated_children[fine_to_nearest_coarse[fine]].insert(fine);
+
+        // "Lonely" coarse points get children based on thier nearest neighbors
+        for (auto& child_set: associated_children)
+            if (child_set.size() == 1)
+                for (Index neighbor: fine_edges.row(*child_set.begin())) {
+                    if (neighbor != -1) child_set.insert(neighbor);
+                }
+
+        // Produce coarse points by averaging the associated children
+        PointMatrix coarse_points{num_coarse_points, fine_points.cols()};
+        for (Index coarse = 0; coarse < coarse_points.rows(); coarse++) {
+            const auto& children = associated_children[coarse];
+            coarse_points.row(coarse) = std::transform_reduce(
+                                            children.begin(), children.end(),
+                                            coarse_points.row(coarse),
+                                            std::plus{},
+                                            [&](auto fine) { return fine_points.row(fine); }
+                                        ) / children.size();
+        }
+
+        return coarse_points;
+    }
+
 
     std::tuple<PointMatrix, EdgeMatrix, Eigen::SparseMatrix<double>> constructProlongation(
-        const Eigen::MatrixXd&fine_points,
-        const EdgeMatrix&fine_edges,
-        const std::vector<Index>&coarse_samples,
+        const Eigen::MatrixXd& fine_points,
+        const EdgeMatrix& fine_edges,
+        const std::vector<Index>& coarse_samples,
         Weighting weighting_scheme,
         bool verbose, bool nested
     ) {
@@ -148,80 +236,31 @@ namespace GravoMG {
         fine_to_nearest_coarse_distance.setConstant(std::numeric_limits<double>::max());
 
         // Compute distance from fine points to coarse points and get the closest coarse point
+        // todo: I'd like a better name for this, and it should return a pair instead of taking output variables
         constructDijkstraWithCluster(
             fine_points, coarse_samples,
             fine_edges, fine_to_nearest_coarse_distance, fine_to_nearest_coarse
         );
 
         // Create neighborhood for the next level
-        std::vector<std::set<Index>> coarse_to_coarse_neighbors{coarse_samples.size()};
-        for (Index fine = 0; fine < fine_points.rows(); ++fine) {
-            for (auto&neighbor: fine_edges.row(fine)) {
-                if (neighbor < 0) break;
-                // If the two points belong to different parent points
-                if (fine_to_nearest_coarse[fine] != fine_to_nearest_coarse[neighbor]) {
-                    // Ensure the other point's parent is in the neighbor list
-                    coarse_to_coarse_neighbors[fine_to_nearest_coarse[fine]].insert(fine_to_nearest_coarse[neighbor]);
-                }
-            }
-        }
+        auto coarse_to_coarse_neighbors = extractCoarseEdges(
+            fine_points, fine_edges,
+            coarse_samples, fine_to_nearest_coarse
+        );
+        auto coarse_edges = toPaddedEdgeMatrix(coarse_to_coarse_neighbors);
+        auto max_num_neighbors = coarse_edges.cols();
 
-        // Convert the set-based neighbor list to a standard homogenuous table
-        auto max_num_neighbors = std::transform_reduce(
-                                     coarse_to_coarse_neighbors.begin(), coarse_to_coarse_neighbors.end(),
-                                     std::size_t{0}, [](const auto&a, const auto&b) { return std::max(a, b); },
-                                     [](const auto&set) { return set.size(); }
-                                 ) + 1; // todo: I think this is necessary to leave room for self-connections
-        EdgeMatrix coarse_edges{coarse_samples.size(), max_num_neighbors};
-        coarse_edges.setConstant(-1); // Unused slots are set to -1
-        for (Index coarse = 0; coarse < coarse_edges.rows(); ++coarse) {
-            // Add self-connection
-            coarse_edges(coarse, 0) = coarse;
-
-            // Add all connections from the set
-            Index j{1};
-            for (auto neighbor: coarse_to_coarse_neighbors[coarse]) {
-                if (neighbor == coarse) continue;
-                coarse_edges(coarse, j++) = neighbor;
-            }
-        }
-
-        if (verbose) std::cout << "Setting up the point locations for the next level\n";
-
-        // Setting up the DoF for the next level
-        // tempPoints are the centers of the voronoi cells, each row for each voronoi cells
-        Eigen::MatrixXd coarse_points(coarse_samples.size(), fine_points.cols());
-        coarse_points.setZero();
-        if (nested) {
-            // If the user chooses, the coarse points can be the same as the sampled points
-            coarse_points = fine_points(coarse_samples, Eigen::all);
-        } else {
-            // Otherwise, coarse points will be produced by averaging the related fine points
-
-            // Accumulate point coordinates
-            std::vector<int> cluster_sizes(coarse_samples.size());
-            for (Index fine = 0; fine < fine_points.rows(); ++fine) {
-                // Each fine point gets included in the nearest coarse point
-                auto coarse = fine_to_nearest_coarse[fine];
-                coarse_points.row(coarse) += fine_points.row(fine);
-                ++cluster_sizes[coarse];
-            }
-            for (Index coarse = 0; coarse < coarse_samples.size(); ++coarse) {
-                if (cluster_sizes[coarse] == 1) {
-                    // If this coarse point is only associated with one fine point
-                    // fall back to including all of its neighbors
-                    // todo: what is the motivation for this?
-                    coarse_points.row(coarse) = fine_points.row(coarse_samples[coarse]); // todo: shouldn't be necessary
-                    for (Index neighbor: coarse_to_coarse_neighbors[coarse]) {
-                        coarse_points.row(coarse) += fine_points.row(coarse_samples[neighbor]);
-                    }
-                    coarse_points.row(coarse) /= ((double)coarse_to_coarse_neighbors[coarse].size() + 1.0);
-                } else {
-                    // Divide by the number of points included in teh average
-                    coarse_points.row(coarse) /= cluster_sizes[coarse];
-                }
-            }
-        }
+        // Find coarse points based on samples
+        // If nested, use the same points as fine
+        // Otherwise, move them to the average location of their children
+        auto coarse_points = nested
+                                 ? fine_points(coarse_samples, Eigen::all)
+                                 : coarseFromMeanOfFineChildren(
+                                     fine_points,
+                                     fine_edges,
+                                     fine_to_nearest_coarse,
+                                     coarse_samples.size()
+                                 );
 
         // Create triangles for this level based on Voronoi cells
         std::vector<Triangle> triangles;
@@ -231,7 +270,7 @@ namespace GravoMG {
         size_t current_triangle = 0;
         for (Index coarse = 0; coarse < coarse_samples.size(); ++coarse) {
             // Iterate over neighbors of the coarse point to get a "pinwheel" of triangles
-            const auto&neighbors = coarse_to_coarse_neighbors[coarse];
+            const auto& neighbors = coarse_to_coarse_neighbors[coarse];
             for (auto neighbor = neighbors.begin(); neighbor != neighbors.end(); ++neighbor) {
                 Index vertex_2 = *neighbor;
                 // We iterate over the coarse indices in order,
@@ -370,9 +409,6 @@ namespace GravoMG {
                     }
                 }
 
-                // temporary: it seems like the fallback is never needed
-                assert(found_triangle);
-
                 // If we managed to find a triangle, we can apply our weighting scheme
                 // (otherwise we'll need to use a fallback, such as the nearest edge or the three nearest points)
                 if (found_triangle) {
@@ -404,7 +440,7 @@ namespace GravoMG {
                     bool found_edge = false;
                     double distance_to_chosen_edge = std::numeric_limits<double>::max();
                     Index chosen_edge = 0;
-                    for (const auto&[edge, distance]: distances_to_edges) {
+                    for (const auto& [edge, distance]: distances_to_edges) {
                         if (distance >= 0. && distance < distance_to_chosen_edge) {
                             found_edge = true;
                             distance_to_chosen_edge = distance;

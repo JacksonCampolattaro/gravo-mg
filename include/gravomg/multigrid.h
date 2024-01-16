@@ -13,9 +13,9 @@ struct VertexPair {
     Eigen::Index vId;
     double distance;
 
-    bool operator>(const VertexPair&ref) const { return distance > ref.distance; }
+    bool operator>(const VertexPair& ref) const { return distance > ref.distance; }
 
-    bool operator<(const VertexPair&ref) const { return distance < ref.distance; }
+    bool operator<(const VertexPair& ref) const { return distance < ref.distance; }
 };
 
 /* Enum to set solver type */
@@ -38,30 +38,51 @@ namespace GravoMG {
     using EdgeMatrix = Eigen::MatrixXi;
     using Triangle = std::array<Index, 3>;
 
-    static double inTriangle(
-        const Eigen::RowVector3d&p, std::span<Index, 3> tri,
-        const Eigen::RowVector3d&triNormal, const Eigen::MatrixXd&pos,
-        Eigen::RowVector3d&bary, std::map<Index, float>&insideEdge
+    double inTriangle(
+        const Eigen::RowVector3d& p, std::span<Index, 3> tri,
+        const Eigen::RowVector3d& triNormal, const Eigen::MatrixXd& pos,
+        Eigen::RowVector3d& bary, std::map<Index, float>& insideEdge
     );
 
-    static std::vector<double> uniformWeights(const int&n_points);
+    std::vector<double> uniformWeights(const int& n_points);
 
-    static std::vector<double> inverseDistanceWeights(
-        const Eigen::MatrixXd&pos, const Eigen::RowVector3d&source, const std::span<Index>&edges
+    std::vector<double> inverseDistanceWeights(
+        const Eigen::MatrixXd& pos, const Eigen::RowVector3d& source, const std::span<Index>& edges
     );
 
-    static void constructDijkstraWithCluster(
-        const Eigen::MatrixXd&points, const std::vector<Index>&source,
-        const EdgeMatrix&neigh, Eigen::VectorXd&D,
-        std::vector<Index>&nearestSourceK
+    void constructDijkstraWithCluster(
+        const Eigen::MatrixXd& points, const std::vector<Index>& source,
+        const EdgeMatrix& neigh, Eigen::VectorXd& D,
+        std::vector<Index>& nearestSourceK
     );
 
-    double averageEdgeLength(const Eigen::MatrixXd&pos, const Eigen::MatrixXi&neigh);
+    double averageEdgeLength(const Eigen::MatrixXd& pos, const Eigen::MatrixXi& neigh);
+
+    std::vector<std::set<Index>> extractCoarseEdges(
+        const Eigen::MatrixXd& fine_points,
+        const EdgeMatrix& fine_edges,
+        const std::vector<Index>& coarse_samples,
+        const std::vector<Index>& fine_to_nearest_coarse
+    );
+
+    EdgeMatrix toPaddedEdgeMatrix(const std::vector<std::set<Index>>& edges);
+
+    PointMatrix coarseFromMeanOfFineChildren(
+        const PointMatrix& fine_points,
+        const EdgeMatrix& fine_edges,
+        const std::vector<Index>& fine_to_nearest_coarse,
+        std::size_t num_coarse_points
+    );
+
+    std::vector<Triangle> constructVoronoiTriangles(
+        const Eigen::MatrixXd& points,
+        const EdgeMatrix& edges
+    );
 
     std::tuple<PointMatrix, EdgeMatrix, Eigen::SparseMatrix<double>> constructProlongation(
-        const Eigen::MatrixXd&fine_points,
-        const EdgeMatrix&fine_edges,
-        const std::vector<Index>&coarse_samples,
+        const Eigen::MatrixXd& fine_points,
+        const EdgeMatrix& fine_edges,
+        const std::vector<Index>& coarse_samples,
         Weighting weighting_scheme,
         bool verbose = false, bool nested = true
     );
