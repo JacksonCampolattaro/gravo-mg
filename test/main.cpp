@@ -9,10 +9,10 @@
 
 #include <fmt/core.h>
 
-#include "igl/octree.h"
-#include "polyscope/curve_network.h"
-#include "polyscope/point_cloud.h"
-#include "polyscope/simple_triangle_mesh.h"
+#include <igl/octree.h>
+#include <polyscope/curve_network.h>
+#include <polyscope/point_cloud.h>
+#include <polyscope/simple_triangle_mesh.h>
 
 #include <gravomg/multigrid.h>
 #include <gravomg/sampling.h>
@@ -33,17 +33,48 @@ std::vector<std::array<Eigen::Index, 2>> toEdgePairs(
     return pairs;
 }
 
-std::vector<std::array<Eigen::Index, 2>> toEdgePairs(
-    const GravoMG::EdgeMatrix& edges,
+std::vector<std::array<Index, 2>> toEdgePairs(
+    const GravoMG::NeighborList& edges,
     const std::function<Index(Index)>& transformation = std::identity{}
 ) {
-    std::vector<std::array<Eigen::Index, 2>> pairs;
-    for (Eigen::Index i = 0; i < edges.rows(); ++i) {
-        for (const Eigen::Index j: edges.row(i)) {
+    std::vector<std::array<Index, 2>> pairs;
+    for (Index i = 0; i < edges.size(); ++i) {
+        for (const Index j: edges[i]) {
+            pairs.push_back({transformation(i), transformation(j)});
+        }
+    }
+    return pairs;
+}
+
+std::vector<std::array<Index, 2>> toEdgePairs(
+    const GravoMG::NeighborMatrix& edges,
+    const std::function<Index(Index)>& transformation = std::identity{}
+) {
+    std::vector<std::array<Index, 2>> pairs;
+    for (Index i = 0; i < edges.rows(); ++i) {
+        for (const Index j: edges.row(i)) {
             if (j >= 0) pairs.push_back({transformation(i), transformation(j)});
         }
     }
     return pairs;
+}
+
+std::set<GravoMG::Triangle> toFaces(const std::vector<GravoMG::TriangleWithNormal>& triangles_with_normals) {
+    std::set<GravoMG::Triangle> triangles;
+    for (auto& [triangle, normal]: triangles_with_normals) {
+        auto [a, b, c] = triangle;
+        // todo: this is silly
+        if (!triangles.contains({a, b, c}) &&
+            !triangles.contains({b, c, a}) &&
+            !triangles.contains({c, a, b})) {
+            // Insert a version of the triangle with both normals
+            triangles.insert({a, b, c});
+            triangles.insert({a, c, b});
+        }
+
+
+    }
+    return triangles;
 }
 
 int main() {
@@ -66,7 +97,7 @@ int main() {
     fmt::print("Sampled point cloud: {}x{}\n", fine_points.rows(), fine_points.cols());
 
     // Find KNN for the point cloud
-    GravoMG::EdgeMatrix fine_edges; {
+    GravoMG::NeighborMatrix fine_edges; {
         std::vector<std::vector<int>> O_PI;
         Eigen::MatrixXi O_CH;
         Eigen::MatrixXd O_CN;
@@ -93,14 +124,15 @@ int main() {
         fine_to_nearest_coarse,
         [&](auto coarse_index) { return coarse_point_recommendations[coarse_index]; }
     );
+    fmt::print("Associated each fine point with a coarse \"parent\"\n");
 
     // Produce a coarse edge graph from the fine one
-    auto coarse_edges = GravoMG::toPaddedEdgeMatrix(GravoMG::extractCoarseEdges(
+    auto coarse_edges = GravoMG::extractCoarseEdges(
         fine_points,
         fine_edges,
         coarse_point_recommendations,
         fine_to_nearest_coarse
-    ));
+    );
     const auto coarse_edge_pairs = toEdgePairs(coarse_edges);
 
     // Improve the locations of the coarse points
@@ -110,9 +142,14 @@ int main() {
         fine_to_nearest_coarse,
         coarse_point_recommendations.size()
     );
-    // todo
+    fmt::print("Moved each coarse point to the mean of its \"children\"\n");
 
     // Produce voronoi triangles for the coarse points
+    auto [triangles_with_normals, point_triangle_associations] = GravoMG::constructVoronoiTriangles(
+        coarse_points,
+        coarse_edges
+    );
+    fmt::print("Constructed voronoi triangles from the coarse points\n");
     // todo
 
 
@@ -177,7 +214,7 @@ int main() {
     // ->setRadius(0.0025)
     // ->addEdgeScalarQuantity("weights", weights)->setEnabled(true);
     // todo: visualize triangles
-    // polyscope::registerSimpleTriangleMesh("triangles", coarse_points, triangles);
+    polyscope::registerSimpleTriangleMesh("triangles", coarse_points, toFaces(triangles_with_normals));
     polyscope::show();
 
     return 0;

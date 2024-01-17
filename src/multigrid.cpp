@@ -71,7 +71,7 @@ namespace GravoMG {
     }
 
     void constructDijkstraWithCluster(const Eigen::MatrixXd& points, const std::vector<Index>& source,
-                                      const EdgeMatrix& neigh, Eigen::VectorXd& D,
+                                      const NeighborMatrix& neigh, Eigen::VectorXd& D,
                                       vector<Index>& nearestSourceK) {
         std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
@@ -113,7 +113,7 @@ namespace GravoMG {
         }
     }
 
-    double averageEdgeLength(const Eigen::MatrixXd& pos, const EdgeMatrix& neigh) {
+    double averageEdgeLength(const Eigen::MatrixXd& pos, const NeighborMatrix& neigh) {
         double sumLength = 0;
         int nEdges = 0;
         for (size_t i = 0; i < pos.rows(); ++i) {
@@ -131,9 +131,9 @@ namespace GravoMG {
         return sumLength / (double)nEdges;
     }
 
-    std::vector<std::set<Index>> extractCoarseEdges(
-        const Eigen::MatrixXd& fine_points,
-        const EdgeMatrix& fine_edges,
+    NeighborList extractCoarseEdges(
+        const PointMatrix& fine_points,
+        const NeighborMatrix& fine_edges,
         const std::vector<Index>& coarse_samples,
         const std::vector<Index>& fine_to_nearest_coarse
     ) {
@@ -154,7 +154,7 @@ namespace GravoMG {
 
     }
 
-    EdgeMatrix toPaddedEdgeMatrix(const std::vector<std::set<Index>>& edges) {
+    NeighborMatrix toPaddedEdgeMatrix(const NeighborList& edges) {
         // Convert the set-based neighbor list to a standard homogenuous table
 
         // Prepare a matrix with room for the largest edge set
@@ -164,7 +164,7 @@ namespace GravoMG {
                                            [](const auto& a, const auto& b) { return std::max(a, b); },
                                            [](const auto& set) { return set.size(); }
                                        ) + 1;
-        EdgeMatrix edge_matrix{edges.size(), max_num_neighbors};
+        NeighborMatrix edge_matrix{edges.size(), max_num_neighbors};
 
         // Unused slots are set to -1
         edge_matrix.setConstant(-1);
@@ -187,7 +187,7 @@ namespace GravoMG {
 
     PointMatrix coarseFromMeanOfFineChildren(
         const PointMatrix& fine_points,
-        const EdgeMatrix& fine_edges,
+        const NeighborMatrix& fine_edges,
         const std::vector<Index>& fine_to_nearest_coarse,
         std::size_t num_coarse_points
     ) {
@@ -219,10 +219,66 @@ namespace GravoMG {
         return coarse_points;
     }
 
+    std::pair<std::vector<TriangleWithNormal>, std::vector<std::vector<size_t>>> constructVoronoiTriangles(
+        const PointMatrix& points,
+        const NeighborList& edges
+    ) {
 
-    std::tuple<PointMatrix, EdgeMatrix, Eigen::SparseMatrix<double>> constructProlongation(
-        const Eigen::MatrixXd& fine_points,
-        const EdgeMatrix& fine_edges,
+        std::vector<std::pair<Triangle, Eigen::RowVector3d>> triangles_with_normals{};
+        std::vector<std::vector<size_t>> associated_triangles(points.rows());
+
+        for (Index vertex_0 = 0; vertex_0 < points.rows(); ++vertex_0) {
+            // Iterate over neighbors of the first vertex to get a "pinwheel" of triangles
+            const auto& neighbors = edges[vertex_0];
+            for (auto neighbor = neighbors.begin(); neighbor != neighbors.end(); ++neighbor) {
+                const Index vertex_1 = *neighbor;
+
+                // We iterate over the vertices in order,
+                // so if the neighboring idx is lower then the current idx,
+                // it must have been considered before and be part of a triangle.
+                if (vertex_1 < vertex_0) continue;
+
+                // The third vertex of each triangle comes from the remaining neighbors of the first one
+                for (auto other_neighbor = std::next(neighbor); other_neighbor != neighbors.end(); other_neighbor++) {
+                    const Index vertex_2 = *other_neighbor;
+
+                    // As with vertex 2; if this vertex has been considered before we don't make a triangle
+                    if (vertex_2 < vertex_0) continue;
+
+                    // Only create triangles from vertices which are neighbors
+                    // (we already know that vertex_2 and vertex_3 are neighbors of vertex_0)
+                    if (edges[vertex_1].contains(vertex_2)) {
+
+                        // Prodce a normal for the triangle
+                        Eigen::RowVector3d edge_01 = points.row(vertex_1) - points.row(vertex_0);
+                        Eigen::RowVector3d edge_12 = points.row(vertex_2) - points.row(vertex_0);
+                        auto normal = edge_01.cross(edge_12).normalized();
+
+                        // Add the triangle
+                        triangles_with_normals.emplace_back(
+                            Triangle{vertex_0, vertex_1, vertex_2},
+                            normal
+                        );
+
+                        // Triangle ID is equivalent to its location in the list
+                        auto triangle_id = triangles_with_normals.size() - 1;
+
+                        // Register the triangle with all the vertices it touches
+                        associated_triangles[vertex_0].emplace_back(triangle_id);
+                        associated_triangles[vertex_1].emplace_back(triangle_id);
+                        associated_triangles[vertex_2].emplace_back(triangle_id);
+                    }
+                }
+            }
+        }
+
+        return {triangles_with_normals, associated_triangles};
+    }
+
+
+    std::tuple<PointMatrix, NeighborMatrix, Eigen::SparseMatrix<double>> constructProlongation(
+        const PointMatrix& fine_points,
+        const NeighborMatrix& fine_edges,
         const std::vector<Index>& coarse_samples,
         Weighting weighting_scheme,
         bool verbose, bool nested

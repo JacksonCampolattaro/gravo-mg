@@ -33,6 +33,6 @@ target_link_libraries(
         test PRIVATE
         gravo-mg::gravo-mg
         fmt::fmt
-        polyscope
         igl::core
+        polyscope
 )
