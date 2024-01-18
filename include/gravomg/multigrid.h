@@ -33,15 +33,6 @@ enum Weighting {
 
 namespace GravoMG {
 
-    using Eigen::Index;
-    using Point = Eigen::RowVector3d;
-    using Normal = Eigen::RowVector3d;
-    using PointMatrix = Eigen::MatrixXd;
-    using NeighborMatrix = Eigen::MatrixXi;
-    using NeighborList = std::vector<std::set<Index>>;
-    using Triangle = std::array<Index, 3>;
-    using TriangleWithNormal = std::pair<Triangle, Normal>;
-
     double inTriangle(
         const Eigen::RowVector3d& p, std::span<Index, 3> tri,
         const Eigen::RowVector3d& triNormal, const Eigen::MatrixXd& pos,
@@ -68,8 +59,6 @@ namespace GravoMG {
         const std::vector<Index>& coarse_samples,
         const std::vector<Index>& fine_to_nearest_coarse
     );
-
-    NeighborMatrix toPaddedEdgeMatrix(const NeighborList& edges);
 
     PointMatrix coarseFromMeanOfFineChildren(
         const PointMatrix& fine_points,

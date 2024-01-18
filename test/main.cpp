@@ -14,10 +14,12 @@
 #include <polyscope/point_cloud.h>
 #include <polyscope/simple_triangle_mesh.h>
 
+#include <nonmanifoldlaplacian/robust_laplacian.h>
+
 #include <gravomg/multigrid.h>
 #include <gravomg/sampling.h>
 
-static constexpr int NUM_POINTS = 8000;
+static constexpr int NUM_POINTS = 5000;
 static constexpr int NUM_COARSE_POINTS = 100; // todo: use binary search for disc sampling radius
 static constexpr int K = 32;
 
@@ -97,15 +99,9 @@ int main() {
     fmt::print("Sampled point cloud: {}x{}\n", fine_points.rows(), fine_points.cols());
 
     // Find KNN for the point cloud
-    GravoMG::NeighborMatrix fine_edges; {
-        std::vector<std::vector<int>> O_PI;
-        Eigen::MatrixXi O_CH;
-        Eigen::MatrixXd O_CN;
-        Eigen::VectorXd O_W;
-        igl::octree(fine_points, O_PI, O_CH, O_CN, O_W);
-        igl::knn(fine_points, K, O_PI, O_CH, O_CN, O_W, fine_edges);
-    }
-    fmt::print("Produced KNN table: {}x{}\n", fine_edges.rows(), fine_edges.cols());
+    const auto [stiffness, M] = buildPointCloudLaplacian(fine_points, 1e-5, K);
+    const auto fine_edges = GravoMG::toHomogenous(GravoMG::extractEdges(stiffness));
+    fmt::print("Produced neighbor table: {}x{}\n", fine_edges.rows(), fine_edges.cols());
 
     // Select coarse point hints
     const auto coarse_point_recommendations = GravoMG::fastDiscSample(fine_points, fine_edges, 0.1);

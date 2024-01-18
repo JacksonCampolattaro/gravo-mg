@@ -11,10 +11,23 @@
 
 #include <Eigen/Eigen>
 
-using namespace std;
-
 namespace GravoMG {
-    void scaleMesh(Eigen::MatrixXd &V, const Eigen::MatrixXi &F, double scaleRatio = 1.0);
+
+    using Eigen::Index;
+    using Point = Eigen::RowVector3d;
+    using Normal = Eigen::RowVector3d;
+    using PointMatrix = Eigen::MatrixXd;
+    using NeighborMatrix = Eigen::MatrixXi;
+    using NeighborList = std::vector<std::set<Index>>;
+    using Triangle = std::array<Index, 3>;
+    using TriangleWithNormal = std::pair<Triangle, Normal>;
+
+    void scaleMesh(Eigen::MatrixXd& V, const Eigen::MatrixXi& F, double scaleRatio = 1.0);
+
+    NeighborMatrix toHomogenous(const NeighborList& edges);
+
+    NeighborList extractEdges(const Eigen::SparseMatrix<double>& matrix);
+
 }
 
 #endif // !UTILITY_H

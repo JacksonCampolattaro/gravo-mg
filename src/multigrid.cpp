@@ -61,7 +61,7 @@ namespace GravoMG {
         double sumWeight = 0.;
         std::vector<double> weights(edges.size());
         for (size_t j = 0; j < edges.size(); ++j) {
-            weights[j] = 1. / max(1e-8, (p - pos.row(edges[j])).norm());
+            weights[j] = 1. / std::max(1e-8, (p - pos.row(edges[j])).norm());
             sumWeight += weights[j];
         }
         for (size_t j = 0; j < weights.size(); ++j) {
@@ -72,7 +72,7 @@ namespace GravoMG {
 
     void constructDijkstraWithCluster(const Eigen::MatrixXd& points, const std::vector<Index>& source,
                                       const NeighborMatrix& neigh, Eigen::VectorXd& D,
-                                      vector<Index>& nearestSourceK) {
+                                      std::vector<Index>& nearestSourceK) {
         std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
 
@@ -152,37 +152,6 @@ namespace GravoMG {
 
         return coarse_to_coarse_neighbors;
 
-    }
-
-    NeighborMatrix toPaddedEdgeMatrix(const NeighborList& edges) {
-        // Convert the set-based neighbor list to a standard homogenuous table
-
-        // Prepare a matrix with room for the largest edge set
-        const auto max_num_neighbors = std::transform_reduce(
-                                           edges.begin(), edges.end(),
-                                           std::size_t{0},
-                                           [](const auto& a, const auto& b) { return std::max(a, b); },
-                                           [](const auto& set) { return set.size(); }
-                                       ) + 1;
-        NeighborMatrix edge_matrix{edges.size(), max_num_neighbors};
-
-        // Unused slots are set to -1
-        edge_matrix.setConstant(-1);
-
-        // Set edges row by row
-        for (Index i = 0; i < edge_matrix.rows(); ++i) {
-            // Add self-connection in the first position
-            edge_matrix(i, 0) = i;
-
-            // Add all connections from the set
-            Index j{1};
-            for (const auto neighbor: edges[i]) {
-                if (neighbor == i) continue;
-                edge_matrix(i, j++) = neighbor;
-            }
-        }
-
-        return edge_matrix;
     }
 
     PointMatrix coarseFromMeanOfFineChildren(
@@ -303,7 +272,7 @@ namespace GravoMG {
             fine_points, fine_edges,
             coarse_samples, fine_to_nearest_coarse
         );
-        auto coarse_edges = toPaddedEdgeMatrix(coarse_to_coarse_neighbors);
+        auto coarse_edges = toHomogenous(coarse_to_coarse_neighbors);
         auto max_num_neighbors = coarse_edges.cols();
 
         // Find coarse points based on samples
@@ -401,7 +370,7 @@ namespace GravoMG {
                 // get the distance to the two neighboring centroids
                 Eigen::RowVector3d coarse_to_neighbor = neighbor_point - coarse_point;
                 Eigen::RowVector3d coarse_to_fine = fine_points.row(fine) - coarse_point;
-                double coarse_to_neighbor_length = max(coarse_to_neighbor.norm(), 1e-8);
+                double coarse_to_neighbor_length = std::max(coarse_to_neighbor.norm(), 1e-8);
                 double neighbor_weight = (coarse_to_fine).dot(coarse_to_neighbor.normalized())
                                          / coarse_to_neighbor_length;
                 neighbor_weight = std::clamp(neighbor_weight, 0.0, 1.0);
@@ -508,9 +477,9 @@ namespace GravoMG {
                         ++edgesfound;
                         Eigen::RowVector3d p2 = coarse_points.row(chosen_edge);
                         Eigen::RowVector3d e12 = p2 - coarse_point;
-                        double e12Length = max(e12.norm(), 1e-8);
+                        double e12Length = std::max(e12.norm(), 1e-8);
                         double w2 = (fine_point - coarse_point).dot(e12.normalized()) / e12Length;
-                        w2 = min(max(w2, 0.), 1.);
+                        w2 = std::min(std::max(w2, 0.), 1.);
                         double w1 = 1. - w2;
 
                         std::vector<double> weights;
@@ -568,8 +537,8 @@ namespace GravoMG {
             }
         }
         if (verbose)
-            cout << "Percentage of fallback: " << (double)fallbackCount / (double)fine_points.rows() * 100 <<
-                    endl;
+            std::cout << "Percentage of fallback: " << (double)fallbackCount / (double)fine_points.rows() * 100 <<
+                    std::endl;
 
         // The matrix U maps between fine points and coarse
         Eigen::SparseMatrix<double> U;

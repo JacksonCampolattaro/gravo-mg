@@ -4,6 +4,8 @@ project(gravo-mg)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(FetchContent)
+
 # Eigen
 if (TARGET Eigen3::Eigen)
     if (${GC_EIGEN_LOCATION})
@@ -11,7 +13,6 @@ if (TARGET Eigen3::Eigen)
         message(WARNING "Target Eigen3::Eigen already exists. ")
     endif ()
 else ()
-    include(FetchContent)
 
     FetchContent_Declare(
             eigen
@@ -28,8 +29,6 @@ else ()
     add_library(Eigen3::Eigen ALIAS eigen)
     target_include_directories(eigen SYSTEM INTERFACE ${eigen_SOURCE_DIR})
 endif ()
-
-# ===  done finding Eigen
 
 # Add your project files
 SET(SRC_FILES
