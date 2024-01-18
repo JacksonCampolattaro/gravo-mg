@@ -62,7 +62,7 @@ namespace GravoMG {
         const Eigen::MatrixXd&pos, const NeighborMatrix& edges, const double&radius
     ) {
         // todo: in the future it might make sense to return these!
-        Eigen::VectorXd D(edges.rows());
+        Eigen::VectorXd D(edges.size());
         D.setConstant(std::numeric_limits<double>::max());
         std::vector<size_t> nearestSourceK(edges.rows());
 

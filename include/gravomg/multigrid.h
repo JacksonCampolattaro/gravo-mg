@@ -47,22 +47,29 @@ namespace GravoMG {
 
     void constructDijkstraWithCluster(
         const Eigen::MatrixXd& points, const std::vector<Index>& source,
-        const NeighborMatrix& neigh, Eigen::VectorXd& D,
+        const NeighborMatrix& neigh,
+        Eigen::VectorXd& D,
         std::vector<Index>& nearestSourceK
     );
 
-    double averageEdgeLength(const Eigen::MatrixXd& pos, const Eigen::MatrixXi& neigh);
+    std::vector<Index> assignParents(
+        const Eigen::MatrixXd& fine_points,
+        const NeighborList& fine_neighbors,
+        const std::vector<Index>& coarse_samples
+    );
+
+    double averageEdgeLength(const Eigen::MatrixXd& positions, const NeighborList& neighbors);
 
     NeighborList extractCoarseEdges(
         const PointMatrix& fine_points,
-        const NeighborMatrix& fine_edges,
+        const NeighborList& fine_neighbors,
         const std::vector<Index>& coarse_samples,
         const std::vector<Index>& fine_to_nearest_coarse
     );
 
     PointMatrix coarseFromMeanOfFineChildren(
         const PointMatrix& fine_points,
-        const NeighborMatrix& fine_edges,
+        const NeighborList& fine_neighbors,
         const std::vector<Index>& fine_to_nearest_coarse,
         std::size_t num_coarse_points
     );
@@ -72,9 +79,17 @@ namespace GravoMG {
         const NeighborList& edges
     );
 
+    Eigen::SparseMatrix<double> constructProlongation(
+        const PointMatrix& fine_points,
+        const PointMatrix& coarse_points,
+        const NeighborList& coarse_edges,
+        const std::vector<Index>& fine_to_nearest_coarse,
+        Weighting weighting_scheme
+    );
+
     std::tuple<PointMatrix, NeighborMatrix, Eigen::SparseMatrix<double>> constructProlongation(
         const PointMatrix& fine_points,
-        const NeighborMatrix& fine_edges,
+        const NeighborList& fine_neighbors,
         const std::vector<Index>& coarse_samples,
         Weighting weighting_scheme,
         bool verbose = false, bool nested = true

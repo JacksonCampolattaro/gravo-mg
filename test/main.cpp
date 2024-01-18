@@ -20,7 +20,7 @@
 #include <gravomg/sampling.h>
 
 static constexpr int NUM_POINTS = 5000;
-static constexpr int NUM_COARSE_POINTS = 100; // todo: use binary search for disc sampling radius
+static constexpr double REDUCTION_RATIO = 5; // todo: this doesn't seem reasonable
 static constexpr int K = 32;
 
 using Eigen::Index;
@@ -100,21 +100,29 @@ int main() {
 
     // Find KNN for the point cloud
     const auto [stiffness, M] = buildPointCloudLaplacian(fine_points, 1e-5, K);
-    const auto fine_edges = GravoMG::toHomogenous(GravoMG::extractEdges(stiffness));
-    fmt::print("Produced neighbor table: {}x{}\n", fine_edges.rows(), fine_edges.cols());
+    const auto fine_edges = GravoMG::extractEdges(stiffness);
+    const auto fine_edges_homogenous = GravoMG::toHomogenous(fine_edges);
+    fmt::print("Produced neighbor table: {}x{}\n", fine_edges_homogenous.rows(), fine_edges_homogenous.cols());
 
     // Select coarse point hints
-    const auto coarse_point_recommendations = GravoMG::fastDiscSample(fine_points, fine_edges, 0.1);
+    const auto radius = std::cbrt(REDUCTION_RATIO) * GravoMG::averageEdgeLength(fine_points, fine_edges);
+    fmt::print("Selected radius for fast disc sampling: {}\n", radius);
+    const auto coarse_point_recommendations = GravoMG::fastDiscSample(fine_points, fine_edges_homogenous, radius);
     fmt::print("Selected coarse points using fast disc sampling: {}\n", coarse_point_recommendations.size());
     //const auto coarse_points = point_cloud(coarse_point_hints, Eigen::all);
 
     // Associate all fine points with their coarse parent
-    std::vector<Eigen::Index> fine_to_nearest_coarse(fine_points.rows());
-    Eigen::VectorXd fine_to_nearest_coarse_distance(fine_points.rows());
-    fine_to_nearest_coarse_distance.setConstant(std::numeric_limits<double>::max());
-    GravoMG::constructDijkstraWithCluster(
-        fine_points, coarse_point_recommendations,
-        fine_edges, fine_to_nearest_coarse_distance, fine_to_nearest_coarse
+    // std::vector<Eigen::Index> fine_to_nearest_coarse(fine_points.rows());
+    // Eigen::VectorXd fine_to_nearest_coarse_distance(fine_points.rows());
+    // fine_to_nearest_coarse_distance.setConstant(std::numeric_limits<double>::max());
+    // GravoMG::constructDijkstraWithCluster(
+    //     fine_points, coarse_point_recommendations,
+    //     fine_edges, fine_to_nearest_coarse_distance, fine_to_nearest_coarse
+    // );
+    auto fine_to_nearest_coarse = GravoMG::assignParents(
+        fine_points,
+        fine_edges,
+        coarse_point_recommendations
     );
     const auto fine_coarse_edge_pairs = toEdgePairs(
         fine_to_nearest_coarse,
@@ -146,6 +154,8 @@ int main() {
         coarse_edges
     );
     fmt::print("Constructed voronoi triangles from the coarse points\n");
+
+    // Produce a prolongation operator
     // todo
 
 

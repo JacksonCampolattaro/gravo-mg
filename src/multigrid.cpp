@@ -71,7 +71,8 @@ namespace GravoMG {
     }
 
     void constructDijkstraWithCluster(const Eigen::MatrixXd& points, const std::vector<Index>& source,
-                                      const NeighborMatrix& neigh, Eigen::VectorXd& D,
+                                      const NeighborMatrix& neigh,
+                                      Eigen::VectorXd& D,
                                       std::vector<Index>& nearestSourceK) {
         std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
         if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
@@ -113,14 +114,64 @@ namespace GravoMG {
         }
     }
 
-    double averageEdgeLength(const Eigen::MatrixXd& pos, const NeighborMatrix& neigh) {
+    std::vector<Index> assignParents(
+        const Eigen::MatrixXd& fine_points,
+        const NeighborList& fine_neighbors,
+        const std::vector<Index>& coarse_samples
+    ) {
+        std::vector<Index> parents(fine_points.rows());
+        Eigen::VectorXd parent_distances(fine_points.rows());
+        parent_distances.setConstant(std::numeric_limits<double>::max());
+
+        std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> distance_queue;
+
+        // Self-interactions have zero path length
+        for (Index coarse = 0; coarse < coarse_samples.size(); ++coarse) {
+            parents[coarse_samples[coarse]] = coarse;
+            distance_queue.emplace(coarse_samples[coarse], 0.0);
+            parent_distances[coarse_samples[coarse]] = 0.0;
+        }
+
+        // Treat connections in order of path length
+        while (!distance_queue.empty()) {
+
+            // Pop the connection with the shortest path length
+            const VertexPair pair = distance_queue.top();
+            distance_queue.pop();
+            const auto fine_path_length_to_coarse = pair.distance;
+            const auto fine = pair.vId;
+            const auto fine_point = fine_points.row(fine);
+
+            // Treat every neighbor of this point to search for a shorter path
+            for (const auto neighbor: fine_neighbors[fine]) {
+                const auto neighbor_point = fine_points.row(neighbor);
+                const auto neighbor_to_fine_distance = (fine_point - neighbor_point).norm();
+                const auto neighbor_path_length_to_course = neighbor_to_fine_distance + fine_path_length_to_coarse;
+
+                // If we find a shorter path for a neighbor...
+                if (neighbor_path_length_to_course < parent_distances[neighbor]) {
+
+                    // Update its nearest parent & associated distance
+                    parents[neighbor] = parents[fine];
+                    parent_distances[neighbor] = neighbor_path_length_to_course;
+
+                    // Add it to the queue
+                    distance_queue.emplace(neighbor, neighbor_path_length_to_course);
+                }
+
+            }
+        }
+
+        return parents;
+    }
+
+    double averageEdgeLength(const Eigen::MatrixXd& positions, const NeighborList& neighbors) {
         double sumLength = 0;
         int nEdges = 0;
-        for (size_t i = 0; i < pos.rows(); ++i) {
-            Eigen::Vector3d p1 = pos.row(i);
-            for (size_t j = 0; j < neigh.cols(); ++j) {
-                if (neigh(i, j) < 0) continue;
-                Eigen::Vector3d p2 = pos.row(neigh(i, j));
+        for (size_t i = 0; i < positions.rows(); ++i) {
+            Eigen::Vector3d p1 = positions.row(i);
+            for (auto neighbor: neighbors[i]) {
+                Eigen::Vector3d p2 = positions.row(neighbor);
                 double dist = (p1 - p2).norm();
                 if (dist > 0) {
                     sumLength += dist;
@@ -133,15 +184,14 @@ namespace GravoMG {
 
     NeighborList extractCoarseEdges(
         const PointMatrix& fine_points,
-        const NeighborMatrix& fine_edges,
+        const NeighborList& fine_neighbors,
         const std::vector<Index>& coarse_samples,
         const std::vector<Index>& fine_to_nearest_coarse
     ) {
 
         std::vector<std::set<Index>> coarse_to_coarse_neighbors{coarse_samples.size()};
         for (Index fine = 0; fine < fine_points.rows(); ++fine) {
-            for (auto& neighbor: fine_edges.row(fine)) {
-                if (neighbor < 0) break;
+            for (auto& neighbor: fine_neighbors[fine]) {
                 // If the two points belong to different parent points
                 if (fine_to_nearest_coarse[fine] != fine_to_nearest_coarse[neighbor]) {
                     // Ensure the other point's parent is in the neighbor list
@@ -156,7 +206,7 @@ namespace GravoMG {
 
     PointMatrix coarseFromMeanOfFineChildren(
         const PointMatrix& fine_points,
-        const NeighborMatrix& fine_edges,
+        const NeighborList& fine_neighbors,
         const std::vector<Index>& fine_to_nearest_coarse,
         std::size_t num_coarse_points
     ) {
@@ -168,10 +218,10 @@ namespace GravoMG {
 
         // "Lonely" coarse points get children based on thier nearest neighbors
         for (auto& child_set: associated_children)
-            if (child_set.size() == 1)
-                for (Index neighbor: fine_edges.row(*child_set.begin())) {
-                    if (neighbor != -1) child_set.insert(neighbor);
-                }
+            if (child_set.size() == 1) {
+                const auto& neighbors = fine_neighbors[*child_set.begin()];
+                child_set.insert(neighbors.begin(), neighbors.end());
+            }
 
         // Produce coarse points by averaging the associated children
         PointMatrix coarse_points{num_coarse_points, fine_points.cols()};
@@ -247,33 +297,36 @@ namespace GravoMG {
 
     std::tuple<PointMatrix, NeighborMatrix, Eigen::SparseMatrix<double>> constructProlongation(
         const PointMatrix& fine_points,
-        const NeighborMatrix& fine_edges,
+        const NeighborList& fine_neighbors,
         const std::vector<Index>& coarse_samples,
         Weighting weighting_scheme,
         bool verbose, bool nested
     ) {
 
         // Nearest source for every given point
-        std::vector<Index> fine_to_nearest_coarse(fine_points.rows());
-
-        // Distance of the nearest source for every point (initialized to max)
-        Eigen::VectorXd fine_to_nearest_coarse_distance(fine_points.rows());
-        fine_to_nearest_coarse_distance.setConstant(std::numeric_limits<double>::max());
-
-        // Compute distance from fine points to coarse points and get the closest coarse point
-        // todo: I'd like a better name for this, and it should return a pair instead of taking output variables
-        constructDijkstraWithCluster(
-            fine_points, coarse_samples,
-            fine_edges, fine_to_nearest_coarse_distance, fine_to_nearest_coarse
+        std::vector<Index> fine_to_nearest_coarse = assignParents(
+            fine_points,
+            fine_neighbors,
+            coarse_samples
         );
+
+        // // Distance of the nearest source for every point (initialized to max)
+        // Eigen::VectorXd fine_to_nearest_coarse_distance(fine_points.rows());
+        // fine_to_nearest_coarse_distance.setConstant(std::numeric_limits<double>::max());
+        //
+        // // Compute distance from fine points to coarse points and get the closest coarse point
+        // // todo: I'd like a better name for this, and it should return a pair instead of taking output variables
+        // constructDijkstraWithCluster(
+        //     fine_points, coarse_samples,
+        //     fine_edges, fine_to_nearest_coarse_distance, fine_to_nearest_coarse
+        // );
 
         // Create neighborhood for the next level
         auto coarse_to_coarse_neighbors = extractCoarseEdges(
-            fine_points, fine_edges,
+            fine_points, fine_neighbors,
             coarse_samples, fine_to_nearest_coarse
         );
         auto coarse_edges = toHomogenous(coarse_to_coarse_neighbors);
-        auto max_num_neighbors = coarse_edges.cols();
 
         // Find coarse points based on samples
         // If nested, use the same points as fine
@@ -282,59 +335,16 @@ namespace GravoMG {
                                  ? fine_points(coarse_samples, Eigen::all)
                                  : coarseFromMeanOfFineChildren(
                                      fine_points,
-                                     fine_edges,
+                                     fine_neighbors,
                                      fine_to_nearest_coarse,
                                      coarse_samples.size()
                                  );
 
         // Create triangles for this level based on Voronoi cells
-        std::vector<Triangle> triangles;
-        triangles.reserve(coarse_samples.size() * max_num_neighbors);
-        std::vector<std::vector<size_t>> connected_triangles{coarse_samples.size()};
-        std::vector<Eigen::RowVector3d> triangle_normals{coarse_samples.size() * max_num_neighbors};
-        size_t current_triangle = 0;
-        for (Index coarse = 0; coarse < coarse_samples.size(); ++coarse) {
-            // Iterate over neighbors of the coarse point to get a "pinwheel" of triangles
-            const auto& neighbors = coarse_to_coarse_neighbors[coarse];
-            for (auto neighbor = neighbors.begin(); neighbor != neighbors.end(); ++neighbor) {
-                Index vertex_2 = *neighbor;
-                // We iterate over the coarse indices in order,
-                // so if the neighboring idx is lower then the current coarseIdx,
-                // it must have been considered before and be part of a triangle.
-                if (vertex_2 < coarse) continue;
-
-                // The third vertex of each triangle comes from the remaining neighbors of the coarse point
-                for (auto other_neighbor = std::next(neighbor); other_neighbor != neighbors.end(); other_neighbor++) {
-                    Index vertex_3 = *other_neighbor;
-
-                    // As with vertex 2; if this vertex has been considered before we don't make a triangle
-                    if (vertex_3 < coarse) continue;
-
-                    // Only create triangles from vertices which are neighbors
-                    // (we already know that vertex_2 and vertex_3 are neighbors of the coarse point)
-                    if (coarse_to_coarse_neighbors[vertex_2].find(vertex_3)
-                        == coarse_to_coarse_neighbors[vertex_2].end())
-                        continue;
-
-                    // Add the triangle
-                    triangles.push_back({coarse, vertex_2, vertex_3});
-
-                    // Prodce a normal for the triangle
-                    Eigen::RowVector3d e12 = coarse_points.row(vertex_2) - coarse_points.row(coarse);
-                    Eigen::RowVector3d e13 = coarse_points.row(vertex_3) - coarse_points.row(coarse);
-                    triangle_normals.push_back(e12.cross(e13).normalized());
-
-                    // Register the triangle with all the vertices it touches
-                    connected_triangles[coarse].emplace_back(current_triangle);
-                    connected_triangles[vertex_2].emplace_back(current_triangle);
-                    connected_triangles[vertex_3].emplace_back(current_triangle);
-
-                    ++current_triangle;
-                }
-            }
-        }
-        triangles.shrink_to_fit();
-        triangle_normals.shrink_to_fit();
+        auto [triangles_with_normals, point_triangle_associations] = GravoMG::constructVoronoiTriangles(
+            coarse_points,
+            coarse_to_coarse_neighbors
+        );
 
         // List of triplets to build prolongation operator U
         std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
@@ -409,9 +419,8 @@ namespace GravoMG {
                 std::map<Index, float> distances_to_edges;
 
                 // Iterate over all triangles
-                for (size_t t: connected_triangles[coarse]) {
-                    auto triangle = triangles[t];
-                    auto triangle_normal = triangle_normals[t];
+                for (size_t t: point_triangle_associations[coarse]) {
+                    auto [triangle, triangle_normal] = triangles_with_normals[t];
 
                     // Rotate the triangle until the coarse index is in position 0
                     while (triangle[0] != coarse) std::rotate(triangle.begin(), triangle.begin() + 1, triangle.end());
