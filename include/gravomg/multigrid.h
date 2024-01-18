@@ -82,7 +82,7 @@ namespace GravoMG {
     Eigen::SparseMatrix<double> constructProlongation(
         const PointMatrix& fine_points,
         const PointMatrix& coarse_points,
-        const NeighborList& coarse_edges,
+        const NeighborList& coarse_neighbors,
         const std::vector<Index>& fine_to_nearest_coarse,
         Weighting weighting_scheme
     );

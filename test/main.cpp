@@ -156,33 +156,14 @@ int main() {
     fmt::print("Constructed voronoi triangles from the coarse points\n");
 
     // Produce a prolongation operator
-    // todo
-
-
-#if(false)
-    // Produce prolongation operator
-    const auto [coarse_points, coarse_edges, U] = GravoMG::constructProlongation(
-        fine_points, knn_edges,
-        coarse_point_recommendations,
-        BARYCENTRIC,
-        true, false
+    auto U = GravoMG::constructProlongation(
+        fine_points,
+        coarse_points,
+        coarse_edges,
+        fine_to_nearest_coarse,
+        BARYCENTRIC
     );
     fmt::print("Produced a prolongation operator: {}x{}\n", U.rows(), U.cols());
-
-    // Get coarse triangles from the sparse matrix
-    std::vector<GravoMG::Triangle> triangles;
-    for (int i = 0; i < U.outerSize(); i++) {
-        // GravoMG::Triangle triangle;
-        // auto vertex_it = triangle.begin();
-        for (Eigen::SparseMatrix<double>::InnerIterator it(U, i); it; ++it) {
-            fmt::print("({}, {})\n", it.row(), it.col());
-            // *vertex_it = it.col();
-            // vertex_it++;
-        }
-        //triangles.emplace_back(triangle);
-    }
-    fmt::print("Extracted triangles: {} elements\n", triangles.size());
-
 
     // Combine coarse and fine points into a single matrix
     auto total_point_count = fine_points.rows() + coarse_points.rows();
@@ -198,7 +179,7 @@ int main() {
     fmt::print("Combined coarse and fine points into a single cloud, with a combined prolongation operator\n");
 
     // Get relationships from the combined sparse matrix
-    std::vector<std::array<Eigen::Index, 2>> edges;
+    std::vector<std::array<Index, 2>> edges;
     std::vector<double> weights;
     for (int i = 0; i < multilevel_U.outerSize(); i++) {
         for (Eigen::SparseMatrix<double>::InnerIterator it(multilevel_U, i); it; ++it) {
@@ -207,7 +188,6 @@ int main() {
         }
     }
     fmt::print("Extracted fine-coarse relationships: {} elements\n", edges.size());
-#endif
 
     // Show results
     polyscope::init();
@@ -215,10 +195,10 @@ int main() {
             ->setPointRadius(0.0015);
     polyscope::registerPointCloud("coarse-points", coarse_points)
             ->setPointRadius(0.005);
-    polyscope::registerCurveNetwork("fine-coarse", fine_points, fine_coarse_edge_pairs);
     polyscope::registerCurveNetwork("coarse-coarse", coarse_points, coarse_edge_pairs);
-    // ->setRadius(0.0025)
-    // ->addEdgeScalarQuantity("weights", weights)->setEnabled(true);
+    polyscope::registerCurveNetwork("fine-coarse", multilevel_point_cloud, edges)
+            ->setRadius(0.0025)
+            ->addEdgeScalarQuantity("weights", weights)->setEnabled(true);
     // todo: visualize triangles
     polyscope::registerSimpleTriangleMesh("triangles", coarse_points, toFaces(triangles_with_normals));
     polyscope::show();
