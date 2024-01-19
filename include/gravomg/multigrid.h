@@ -79,7 +79,7 @@ namespace GravoMG {
         const NeighborList& edges
     );
 
-    Eigen::SparseMatrix<double> constructProlongation(
+    ProlongationOperator constructProlongation(
         const PointMatrix& fine_points,
         const PointMatrix& coarse_points,
         const NeighborList& coarse_neighbors,
@@ -87,13 +87,7 @@ namespace GravoMG {
         Weighting weighting_scheme
     );
 
-    std::tuple<PointMatrix, NeighborMatrix, Eigen::SparseMatrix<double>> constructProlongation(
-        const PointMatrix& fine_points,
-        const NeighborList& fine_neighbors,
-        const std::vector<Index>& coarse_samples,
-        Weighting weighting_scheme,
-        bool verbose = false, bool nested = true
-    );
+    PointMatrix projectedPoints(const ProlongationOperator& weights, const PointMatrix& coarse_points);
 
 }
 

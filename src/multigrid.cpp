@@ -227,9 +227,10 @@ namespace GravoMG {
         PointMatrix coarse_points{num_coarse_points, fine_points.cols()};
         for (Index coarse = 0; coarse < coarse_points.rows(); coarse++) {
             const auto& children = associated_children[coarse];
+            auto r = coarse_points.row(coarse);
             coarse_points.row(coarse) = std::transform_reduce(
                                             children.begin(), children.end(),
-                                            coarse_points.row(coarse),
+                                            Point{0.0, 0.0, 0.0},
                                             std::plus{},
                                             [&](auto fine) { return fine_points.row(fine); }
                                         ) / children.size();
@@ -294,7 +295,7 @@ namespace GravoMG {
         return {triangles_with_normals, associated_triangles};
     }
 
-    Eigen::SparseMatrix<double> constructProlongation(
+    ProlongationOperator constructProlongation(
         const PointMatrix& fine_points, const PointMatrix& coarse_points,
         const NeighborList& coarse_neighbors,
         const std::vector<Index>& fine_to_nearest_coarse,
@@ -308,7 +309,6 @@ namespace GravoMG {
 
         // List of triplets to build prolongation operator U
         std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
-        bool nested = false;
 
         // Create local triangulation on each cluster (centralized at sample i)
         int notrisfound = 0;
@@ -331,9 +331,6 @@ namespace GravoMG {
                 AllTriplet.emplace_back(fine, coarse, 1.0);
 
             } else if (coarse_neighbors[coarse].size() == 1) {
-
-                // todo: this assumes coarse_neighbors doesn't contain self-interactions
-                // I don't know if that's the case!
 
                 // If the coarse point only has one neighbor, no triangle can be created.
                 // Thus, the weights are distributed w.r.t. the distance to each coarse point.
@@ -370,6 +367,12 @@ namespace GravoMG {
             } else {
                 // This fine point's coarse parent has at least two neighbors, so we can use a triangle
 
+                // std::cout << fine << " -> " << coarse << "\n\t";
+                // for (auto neighbor: coarse_neighbors[coarse])
+                //     std::cout << neighbor << ", ";
+                // std::cout << std::endl;
+
+
                 // Only keep the triangle with the minimum distance
                 double distance_to_chosen_triangle = std::numeric_limits<double>::max();
                 Eigen::RowVector3d chosen_triangle_barycenter = {0., 0., 0.};
@@ -388,13 +391,16 @@ namespace GravoMG {
                     // Rotate the triangle until the coarse index is in position 0
                     while (triangle[0] != coarse) std::rotate(triangle.begin(), triangle.begin() + 1, triangle.end());
 
-                    Eigen::RowVector3d barycenter = {0., 0., 0.};
                     // If the triangle contains the point, the distance is positive, else it's negative
+                    Eigen::RowVector3d barycenter = {0., 0., 0.};
                     double distance_to_triangle = inTriangle(
                         fine_point, triangle,
                         triangle_normal, coarse_points,
                         barycenter, distances_to_edges
                     );
+                    // std::cout << "\t{" << triangle[0] << ", " << triangle[1] << ", " << triangle[2] << "} "
+                    //         << "--> " << distance_to_triangle << std::endl;
+                    // std::cout << "\t{" << coarse_points.row(triangle[0]) << ", " << coarse_points.row(triangle[1]) << ", " << coarse_points.row(triangle[2]) << "}\n";
 
                     // If we've discovered a closer triangle, update the selection
                     if (distance_to_triangle >= 0. && distance_to_triangle < distance_to_chosen_triangle) {
@@ -508,280 +514,32 @@ namespace GravoMG {
                 }
             }
         }
+        assert((float)fallbackCount / fine_points.rows() < 0.5);
+        // std::cout << "Percentage of fallback: " << (double)fallbackCount / (double)fine_points.rows() * 100 <<
+        //         std::endl;
 
         // The matrix U maps between fine points and coarse
-        Eigen::SparseMatrix<double> U;
+        ProlongationOperator U;
         U.resize(fine_points.rows(), coarse_points.rows());
         U.setFromTriplets(AllTriplet.begin(), AllTriplet.end());
 
         return U;
     }
 
-
-    std::tuple<PointMatrix, NeighborMatrix, Eigen::SparseMatrix<double>> constructProlongation(
-        const PointMatrix& fine_points,
-        const NeighborList& fine_neighbors,
-        const std::vector<Index>& coarse_samples,
-        Weighting weighting_scheme,
-        bool verbose, bool nested
-    ) {
-
-        // Nearest source for every given point
-        std::vector<Index> fine_to_nearest_coarse = assignParents(
-            fine_points,
-            fine_neighbors,
-            coarse_samples
-        );
-
-        // // Distance of the nearest source for every point (initialized to max)
-        // Eigen::VectorXd fine_to_nearest_coarse_distance(fine_points.rows());
-        // fine_to_nearest_coarse_distance.setConstant(std::numeric_limits<double>::max());
-        //
-        // // Compute distance from fine points to coarse points and get the closest coarse point
-        // // todo: I'd like a better name for this, and it should return a pair instead of taking output variables
-        // constructDijkstraWithCluster(
-        //     fine_points, coarse_samples,
-        //     fine_edges, fine_to_nearest_coarse_distance, fine_to_nearest_coarse
-        // );
-
-        // Create neighborhood for the next level
-        auto coarse_to_coarse_neighbors = extractCoarseEdges(
-            fine_points, fine_neighbors,
-            coarse_samples, fine_to_nearest_coarse
-        );
-        auto coarse_edges = toHomogenous(coarse_to_coarse_neighbors);
-
-        // Find coarse points based on samples
-        // If nested, use the same points as fine
-        // Otherwise, move them to the average location of their children
-        auto coarse_points = nested
-                                 ? fine_points(coarse_samples, Eigen::all)
-                                 : coarseFromMeanOfFineChildren(
-                                     fine_points,
-                                     fine_neighbors,
-                                     fine_to_nearest_coarse,
-                                     coarse_samples.size()
-                                 );
-
-        // Create triangles for this level based on Voronoi cells
-        auto [triangles_with_normals, point_triangle_associations] = GravoMG::constructVoronoiTriangles(
-            coarse_points,
-            coarse_to_coarse_neighbors
-        );
-
-        // List of triplets to build prolongation operator U
-        std::vector<Eigen::Triplet<double>> AllTriplet, UNeighAllTriplet;
-
-        // Create local triangulation on each cluster (centralized at sample i)
-        int notrisfound = 0;
-        int edgesfound = 0;
-        int fallbackCount = 0;
-
-        // Iterate over each point
-        for (Index fine = 0; fine < fine_points.rows(); ++fine) {
-            Eigen::RowVector3d fine_point = fine_points.row(fine);
-            Index coarse = fine_to_nearest_coarse[fine];
-            Eigen::RowVector3d coarse_point = coarse_points.row(coarse);
-
-            // Exact matches get a weight of 1.0 (if in nested mode)
-            if (nested && coarse_samples[fine_to_nearest_coarse[fine]] == fine) {
-                AllTriplet.emplace_back(fine, coarse, 1.);
-                continue;
-            }
-
-            // If the coarse point has no neighbors,
-            // set the weight to 1 for the coarse point.
-            if (coarse_to_coarse_neighbors[coarse].empty()) {
-                // todo: this should never happen!
-                AllTriplet.emplace_back(fine, coarse, 1.);
-            } else if (coarse_to_coarse_neighbors[coarse].size() == 1) {
-                // If the coarse point only has one neighbor, no triangle can be created.
-                // Thus, the weights are distributed w.r.t. the distance to each coarse point.
-                Index neighbor = *coarse_to_coarse_neighbors[coarse].begin();
-                Eigen::RowVector3d neighbor_point = coarse_points.row(neighbor);
-
-                // get the distance to the two neighboring centroids
-                Eigen::RowVector3d coarse_to_neighbor = neighbor_point - coarse_point;
-                Eigen::RowVector3d coarse_to_fine = fine_points.row(fine) - coarse_point;
-                double coarse_to_neighbor_length = std::max(coarse_to_neighbor.norm(), 1e-8);
-                double neighbor_weight = (coarse_to_fine).dot(coarse_to_neighbor.normalized())
-                                         / coarse_to_neighbor_length;
-                neighbor_weight = std::clamp(neighbor_weight, 0.0, 1.0);
-                double coarse_weight = 1 - neighbor_weight;
-
-                std::vector<double> weights;
-                switch (weighting_scheme) {
-                    case BARYCENTRIC:
-                        AllTriplet.emplace_back(fine, coarse, coarse_weight);
-                        AllTriplet.emplace_back(fine, neighbor, neighbor_weight);
-                        break;
-                    case UNIFORM:
-                        weights = uniformWeights(2);
-                        AllTriplet.emplace_back(fine, coarse, weights[0]);
-                        AllTriplet.emplace_back(fine, neighbor, weights[1]);
-                        break;
-                    case INVDIST:
-                        std::vector<Index> endPoints = {coarse, neighbor};
-                        weights = inverseDistanceWeights(coarse_points, fine_point, endPoints);
-                        AllTriplet.emplace_back(fine, coarse, weights[0]);
-                        AllTriplet.emplace_back(fine, neighbor, weights[1]);
-                        break;
-                }
-            } else {
-                // This fine point's coarse parent has at least two neighbors, so we can use a triangle
-
-                // Only keep the triangle with the minimum distance
-                double distance_to_chosen_triangle = std::numeric_limits<double>::max();
-                Eigen::RowVector3d chosen_triangle_barycenter = {0., 0., 0.};
-                Triangle chosen_triangle;
-                bool found_triangle = false;
-
-                // Values are positive if inside and negative if not
-                // Float value represents distance
-                // todo: I don't know if I understand the role of this
-                std::map<Index, float> distances_to_edges;
-
-                // Iterate over all triangles
-                for (size_t t: point_triangle_associations[coarse]) {
-                    auto [triangle, triangle_normal] = triangles_with_normals[t];
-
-                    // Rotate the triangle until the coarse index is in position 0
-                    while (triangle[0] != coarse) std::rotate(triangle.begin(), triangle.begin() + 1, triangle.end());
-
-                    Eigen::RowVector3d barycenter = {0., 0., 0.};
-                    // If the triangle contains the point, the distance is positive, else it's negative
-                    double distance_to_triangle = inTriangle(
-                        fine_point, triangle,
-                        triangle_normal, coarse_points,
-                        barycenter, distances_to_edges
-                    );
-
-                    // If we've discovered a closer triangle, update the selection
-                    if (distance_to_triangle >= 0. && distance_to_triangle < distance_to_chosen_triangle) {
-                        found_triangle = true;
-                        distance_to_chosen_triangle = distance_to_triangle;
-                        chosen_triangle = triangle;
-                        chosen_triangle_barycenter = barycenter;
-                        break;
-                    }
-                }
-
-                // If we managed to find a triangle, we can apply our weighting scheme
-                // (otherwise we'll need to use a fallback, such as the nearest edge or the three nearest points)
-                if (found_triangle) {
-                    std::vector<double> weights;
-                    switch (weighting_scheme) {
-                        case BARYCENTRIC:
-                            AllTriplet.emplace_back(fine, chosen_triangle[0], chosen_triangle_barycenter(0));
-                            AllTriplet.emplace_back(fine, chosen_triangle[1], chosen_triangle_barycenter(1));
-                            AllTriplet.emplace_back(fine, chosen_triangle[2], chosen_triangle_barycenter(2));
-                            break;
-                        case UNIFORM:
-                            weights = uniformWeights(3);
-                            AllTriplet.emplace_back(fine, chosen_triangle[0], weights[0]);
-                            AllTriplet.emplace_back(fine, chosen_triangle[1], weights[1]);
-                            AllTriplet.emplace_back(fine, chosen_triangle[2], weights[2]);
-                            break;
-                        case INVDIST:
-                            weights = inverseDistanceWeights(coarse_points, fine_point, chosen_triangle);
-                            AllTriplet.emplace_back(fine, chosen_triangle[0], weights[0]);
-                            AllTriplet.emplace_back(fine, chosen_triangle[1], weights[1]);
-                            AllTriplet.emplace_back(fine, chosen_triangle[2], weights[2]);
-                            break;
-                    }
-                } else {
-                    // First fallback: attempt to find the nearest edge, and weigh by distance along that edge
-
-                    // Find the closest edge to this point
-                    // One vertex of the edge is the coarse index, so we only need to choose the other vertex
-                    bool found_edge = false;
-                    double distance_to_chosen_edge = std::numeric_limits<double>::max();
-                    Index chosen_edge = 0;
-                    for (const auto& [edge, distance]: distances_to_edges) {
-                        if (distance >= 0. && distance < distance_to_chosen_edge) {
-                            found_edge = true;
-                            distance_to_chosen_edge = distance;
-                            chosen_edge = edge;
-                            break;
-                        }
-                    }
-                    if (found_edge) {
-                        ++edgesfound;
-                        Eigen::RowVector3d p2 = coarse_points.row(chosen_edge);
-                        Eigen::RowVector3d e12 = p2 - coarse_point;
-                        double e12Length = std::max(e12.norm(), 1e-8);
-                        double w2 = (fine_point - coarse_point).dot(e12.normalized()) / e12Length;
-                        w2 = std::min(std::max(w2, 0.), 1.);
-                        double w1 = 1. - w2;
-
-                        std::vector<double> weights;
-                        switch (weighting_scheme) {
-                            case BARYCENTRIC:
-                                AllTriplet.emplace_back(fine, coarse, w1);
-                                AllTriplet.emplace_back(fine, chosen_edge, w2);
-                                break;
-                            case UNIFORM:
-                                weights = uniformWeights(2);
-                                AllTriplet.emplace_back(fine, coarse, weights[0]);
-                                AllTriplet.emplace_back(fine, chosen_edge, weights[1]);
-                                break;
-                            case INVDIST:
-                                std::array<Index, 2> edge = {coarse, chosen_edge};
-                                weights = inverseDistanceWeights(coarse_points, fine_point, edge);
-                                AllTriplet.emplace_back(fine, coarse, weights[0]);
-                                AllTriplet.emplace_back(fine, chosen_edge, weights[1]);
-                                break;
-                        }
-                    } else {
-                        // Second fallback: use weights based on the nearest three coarse points
-
-                        // The first of the three is going to be the nearest coarse point
-                        Triangle nearest_coarse_triangle;
-                        nearest_coarse_triangle[0] = coarse;
-
-                        // Find the distances of all the points
-                        std::vector<VertexPair> coarse_distances;
-                        for (Index neighbor: coarse_edges.row(coarse)) {
-                            // Skip dummy neighbors & self connection
-                            if (neighbor < 0 || neighbor == coarse) continue;
-
-                            // Add this coarse distance to the list
-                            auto distance_to_fine = (fine_point - coarse_points.row(neighbor)).norm();
-                            coarse_distances.emplace_back(neighbor, distance_to_fine);
-                        }
-                        // Sort the coarse points by distance
-                        std::sort(coarse_distances.begin(), coarse_distances.end(), std::less<>());
-                        // Take the next two closest points (after the one we've already chosen) to complee our triangle
-                        for (int j = 1; j < 3; ++j) {
-                            nearest_coarse_triangle[j] = coarse_distances[j - 1].vId;
-                        }
-
-                        // Use inverse distance weights
-                        // todo: do the other schemes not make sense here?
-                        auto weights = inverseDistanceWeights(coarse_points, fine_point, nearest_coarse_triangle);
-                        for (int j = 0; j < nearest_coarse_triangle.size(); j++) {
-                            AllTriplet.emplace_back(fine, nearest_coarse_triangle[j], weights[j]);
-                        }
-                        ++fallbackCount;
-                    }
-                    ++notrisfound;
-                }
+    PointMatrix projectedPoints(const ProlongationOperator& weights, const PointMatrix& coarse_points) {
+        PointMatrix projected_fine_points(weights.rows(), coarse_points.cols());
+        projected_fine_points.setConstant(0.0);
+        for (Index fine = 0; fine < weights.outerSize(); ++fine) {
+            for (ProlongationOperator::InnerIterator it(weights, fine); it; ++it) {
+                projected_fine_points.row(fine) += coarse_points.row(it.col()) * it.value();
+                //auto row = coarse_points.row(it.col()) * it.value();
+                //std::cout << it.row() << " " << it.col()
+                //        << " --> " << it.value()
+                //     value   << std::endl;
             }
         }
-        if (verbose)
-            std::cout << "Percentage of fallback: " << (double)fallbackCount / (double)fine_points.rows() * 100 <<
-                    std::endl;
 
-        // The matrix U maps between fine points and coarse
-        Eigen::SparseMatrix<double> U;
-        U.resize(fine_points.rows(), coarse_points.rows());
-        U.setFromTriplets(AllTriplet.begin(), AllTriplet.end());
-
-        // todo Return the following:
-        // coarse points (voronoi centers)
-        // edges in the coarse point cloud
-        // the matrix U
-        return {coarse_points, coarse_edges, U};
+        return projected_fine_points;
     }
 
 }

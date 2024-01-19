@@ -21,6 +21,7 @@ namespace GravoMG {
     using NeighborList = std::vector<std::set<Index>>;
     using Triangle = std::array<Index, 3>;
     using TriangleWithNormal = std::pair<Triangle, Normal>;
+    using ProlongationOperator = Eigen::SparseMatrix<double, Eigen::RowMajor>;
 
     void scaleMesh(Eigen::MatrixXd& V, const Eigen::MatrixXi& F, double scaleRatio = 1.0);
 
