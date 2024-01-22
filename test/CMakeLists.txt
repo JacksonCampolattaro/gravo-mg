@@ -1,12 +1,12 @@
-project(gravo-mg-tests)
+project(gravomg-tests)
 
 include(FetchContent)
 
 # Dependencies
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-if (NOT TARGET gravo-mg)
-    find_package(gravo-mg REQUIRED)
+if (NOT TARGET gravomg)
+    find_package(gravomg REQUIRED)
 endif ()
 
 # Polyscope
@@ -58,7 +58,7 @@ add_executable(test
 set_property(TARGET test PROPERTY CXX_STANDARD 23)
 target_link_libraries(
         test PRIVATE
-        gravo-mg::gravo-mg
+        gravomg::gravomg
         fmt::fmt
         igl::core
         polyscope

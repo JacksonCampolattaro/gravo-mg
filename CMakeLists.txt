@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(gravo-mg)
+project(gravomg)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,15 +43,15 @@ SET(HEADER_FILES
         include/gravomg/sampling.h
 )
 
-add_library(gravo-mg ${SRC_FILES} ${HEADER_FILES})
-target_link_libraries(gravo-mg PUBLIC Eigen3::Eigen)
-target_include_directories(gravo-mg PUBLIC include)
+add_library(gravomg ${SRC_FILES} ${HEADER_FILES})
+target_link_libraries(gravomg PUBLIC Eigen3::Eigen)
+target_include_directories(gravomg PUBLIC include)
 
-add_library(gravo-mg::gravo-mg ALIAS gravo-mg)
+add_library(gravomg::gravomg ALIAS gravomg)
 
 # Conditionally add the -fPIC flag for shared library on supported platforms
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "amd64")
-    target_compile_options(gravo-mg PRIVATE $<$<CXX_COMPILER_ID:GNU>:-fPIC>)
+    target_compile_options(gravomg PRIVATE $<$<CXX_COMPILER_ID:GNU>:-fPIC>)
 endif ()
 
 add_subdirectory(test)
