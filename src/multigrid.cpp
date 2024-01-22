@@ -11,6 +11,8 @@
 
 namespace GravoMG {
 
+    using VertexWithDistance = std::pair<double, Index>;
+
     double inTriangle(const Eigen::RowVector3d& p, std::span<Index, 3> tri,
                       const Eigen::RowVector3d& triNormal, const Eigen::MatrixXd& pos,
                       Eigen::RowVector3d& bary, std::map<Index, float>& insideEdge) {
@@ -70,50 +72,6 @@ namespace GravoMG {
         return weights;
     }
 
-    void constructDijkstraWithCluster(const Eigen::MatrixXd& points, const std::vector<Index>& source,
-                                      const NeighborMatrix& neigh,
-                                      Eigen::VectorXd& D,
-                                      std::vector<Index>& nearestSourceK) {
-        std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> DistanceQueue;
-        if (nearestSourceK.empty()) nearestSourceK.resize(points.rows(), source[0]);
-
-        for (size_t i = 0; i < source.size(); ++i) {
-            D(source[i]) = 0.0;
-            VertexPair vp{source[i], D(source[i])};
-            DistanceQueue.push(vp);
-            nearestSourceK[source[i]] = i;
-        }
-
-        size_t curSource;
-        while (!DistanceQueue.empty()) {
-            VertexPair vp1 = DistanceQueue.top();
-            curSource = nearestSourceK[vp1.vId];
-            Eigen::RowVector3d vertex1 = points.row(vp1.vId);
-            DistanceQueue.pop();
-
-            for (size_t i = 0; i < neigh.cols(); ++i) {
-                Index vNeigh = neigh(vp1.vId, i);
-
-                if (vNeigh >= 0) {
-                    double dist, distTemp;
-                    Eigen::RowVector3d vertex2 = points.row(vNeigh);
-                    dist = (vertex2 - vertex1).norm();
-                    distTemp = vp1.distance + dist;
-                    if (distTemp < D(vNeigh)) {
-                        // Assign a new distance
-                        D(vNeigh) = distTemp;
-                        VertexPair v2{vNeigh, distTemp};
-                        DistanceQueue.push(v2);
-
-
-                        // Assign the nearest source to a certain point
-                        nearestSourceK[vNeigh] = curSource;
-                    }
-                }
-            }
-        }
-    }
-
     std::vector<Index> assignParents(
         const Eigen::MatrixXd& fine_points,
         const NeighborList& fine_neighbors,
@@ -123,12 +81,12 @@ namespace GravoMG {
         Eigen::VectorXd parent_distances(fine_points.rows());
         parent_distances.setConstant(std::numeric_limits<double>::max());
 
-        std::priority_queue<VertexPair, std::vector<VertexPair>, std::greater<>> distance_queue;
+        std::priority_queue<VertexWithDistance, std::vector<VertexWithDistance>, std::greater<>> distance_queue;
 
         // Self-interactions have zero path length
         for (Index coarse = 0; coarse < coarse_samples.size(); ++coarse) {
             parents[coarse_samples[coarse]] = coarse;
-            distance_queue.emplace(coarse_samples[coarse], 0.0);
+            distance_queue.emplace(0.0, coarse_samples[coarse]);
             parent_distances[coarse_samples[coarse]] = 0.0;
         }
 
@@ -136,10 +94,8 @@ namespace GravoMG {
         while (!distance_queue.empty()) {
 
             // Pop the connection with the shortest path length
-            const VertexPair pair = distance_queue.top();
+            const auto [fine_path_length_to_coarse, fine] = distance_queue.top();
             distance_queue.pop();
-            const auto fine_path_length_to_coarse = pair.distance;
-            const auto fine = pair.vId;
             const auto fine_point = fine_points.row(fine);
 
             // Treat every neighbor of this point to search for a shorter path
@@ -156,7 +112,7 @@ namespace GravoMG {
                     parent_distances[neighbor] = neighbor_path_length_to_course;
 
                     // Add it to the queue
-                    distance_queue.emplace(neighbor, neighbor_path_length_to_course);
+                    distance_queue.emplace(neighbor_path_length_to_course, neighbor);
                 }
 
             }
@@ -348,16 +304,16 @@ namespace GravoMG {
 
                 std::vector<double> weights;
                 switch (weighting_scheme) {
-                    case BARYCENTRIC:
+                    case Weighting::BARYCENTRIC:
                         AllTriplet.emplace_back(fine, coarse, coarse_weight);
                         AllTriplet.emplace_back(fine, neighbor, neighbor_weight);
                         break;
-                    case UNIFORM:
+                    case Weighting::UNIFORM:
                         weights = uniformWeights(2);
                         AllTriplet.emplace_back(fine, coarse, weights[0]);
                         AllTriplet.emplace_back(fine, neighbor, weights[1]);
                         break;
-                    case INVDIST:
+                    case Weighting::INVDIST:
                         std::vector<Index> endPoints = {coarse, neighbor};
                         weights = inverseDistanceWeights(coarse_points, fine_point, endPoints);
                         AllTriplet.emplace_back(fine, coarse, weights[0]);
@@ -417,18 +373,18 @@ namespace GravoMG {
                 if (found_triangle) {
                     std::vector<double> weights;
                     switch (weighting_scheme) {
-                        case BARYCENTRIC:
+                        case Weighting::BARYCENTRIC:
                             AllTriplet.emplace_back(fine, chosen_triangle[0], chosen_triangle_barycenter(0));
                             AllTriplet.emplace_back(fine, chosen_triangle[1], chosen_triangle_barycenter(1));
                             AllTriplet.emplace_back(fine, chosen_triangle[2], chosen_triangle_barycenter(2));
                             break;
-                        case UNIFORM:
+                        case Weighting::UNIFORM:
                             weights = uniformWeights(3);
                             AllTriplet.emplace_back(fine, chosen_triangle[0], weights[0]);
                             AllTriplet.emplace_back(fine, chosen_triangle[1], weights[1]);
                             AllTriplet.emplace_back(fine, chosen_triangle[2], weights[2]);
                             break;
-                        case INVDIST:
+                        case Weighting::INVDIST:
                             weights = inverseDistanceWeights(coarse_points, fine_point, chosen_triangle);
                             AllTriplet.emplace_back(fine, chosen_triangle[0], weights[0]);
                             AllTriplet.emplace_back(fine, chosen_triangle[1], weights[1]);
@@ -462,16 +418,16 @@ namespace GravoMG {
 
                         std::vector<double> weights;
                         switch (weighting_scheme) {
-                            case BARYCENTRIC:
+                            case Weighting::BARYCENTRIC:
                                 AllTriplet.emplace_back(fine, coarse, w1);
                                 AllTriplet.emplace_back(fine, chosen_edge, w2);
                                 break;
-                            case UNIFORM:
+                            case Weighting::UNIFORM:
                                 weights = uniformWeights(2);
                                 AllTriplet.emplace_back(fine, coarse, weights[0]);
                                 AllTriplet.emplace_back(fine, chosen_edge, weights[1]);
                                 break;
-                            case INVDIST:
+                            case Weighting::INVDIST:
                                 std::array<Index, 2> edge = {coarse, chosen_edge};
                                 weights = inverseDistanceWeights(coarse_points, fine_point, edge);
                                 AllTriplet.emplace_back(fine, coarse, weights[0]);
@@ -486,20 +442,21 @@ namespace GravoMG {
                         nearest_coarse_triangle[0] = coarse;
 
                         // Find the distances of all the points
-                        std::vector<VertexPair> coarse_distances;
+                        std::vector<VertexWithDistance> coarse_distances;
                         for (Index neighbor: coarse_neighbors[coarse]) {
                             // Skip dummy neighbors & self connection
                             if (neighbor == coarse) continue;
 
                             // Add this coarse distance to the list
                             auto distance_to_fine = (fine_point - coarse_points.row(neighbor)).norm();
-                            coarse_distances.emplace_back(neighbor, distance_to_fine);
+                            coarse_distances.emplace_back(distance_to_fine, neighbor);
                         }
                         // Sort the coarse points by distance
                         std::sort(coarse_distances.begin(), coarse_distances.end(), std::less<>());
                         // Take the next two closest points (after the one we've already chosen) to complee our triangle
                         for (int j = 1; j < 3; ++j) {
-                            nearest_coarse_triangle[j] = coarse_distances[j - 1].vId;
+                            const auto [other_distance, other_coarse] = coarse_distances[j - 1];
+                            nearest_coarse_triangle[j] = other_coarse;
                         }
 
                         // Use inverse distance weights
@@ -532,10 +489,6 @@ namespace GravoMG {
         for (Index fine = 0; fine < weights.outerSize(); ++fine) {
             for (ProlongationOperator::InnerIterator it(weights, fine); it; ++it) {
                 projected_fine_points.row(fine) += coarse_points.row(it.col()) * it.value();
-                //auto row = coarse_points.row(it.col()) * it.value();
-                //std::cout << it.row() << " " << it.col()
-                //        << " --> " << it.value()
-                //     value   << std::endl;
             }
         }
 

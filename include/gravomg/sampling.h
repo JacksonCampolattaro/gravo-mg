@@ -5,7 +5,7 @@
 
 #include <vector>
 
-#include "multigrid.h"
+#include "utility.h"
 
 namespace GravoMG {
 

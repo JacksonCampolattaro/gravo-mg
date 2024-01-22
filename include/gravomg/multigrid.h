@@ -7,31 +7,13 @@
 
 #include "utility.h"
 
-/* Data structure for Priority Queue */
-struct VertexPair {
-
-    Eigen::Index vId;
-    double distance;
-
-    bool operator>(const VertexPair& ref) const { return distance > ref.distance; }
-
-    bool operator<(const VertexPair& ref) const { return distance < ref.distance; }
-};
-
-/* Enum to set solver type */
-enum Sampling {
-    FASTDISK = 0,
-    RANDOM = 1,
-    MIS = 2
-};
-
-enum Weighting {
-    BARYCENTRIC = 0,
-    UNIFORM = 1,
-    INVDIST = 2
-};
-
 namespace GravoMG {
+
+    enum class Weighting {
+        BARYCENTRIC = 0,
+        UNIFORM = 1,
+        INVDIST = 2
+    };
 
     double inTriangle(
         const Eigen::RowVector3d& p, std::span<Index, 3> tri,
@@ -43,13 +25,6 @@ namespace GravoMG {
 
     std::vector<double> inverseDistanceWeights(
         const Eigen::MatrixXd& pos, const Eigen::RowVector3d& source, const std::span<Index>& edges
-    );
-
-    void constructDijkstraWithCluster(
-        const Eigen::MatrixXd& points, const std::vector<Index>& source,
-        const NeighborMatrix& neigh,
-        Eigen::VectorXd& D,
-        std::vector<Index>& nearestSourceK
     );
 
     std::vector<Index> assignParents(

@@ -149,7 +149,7 @@ int main() {
         coarse_points,
         coarse_edges,
         fine_to_nearest_coarse,
-        BARYCENTRIC
+        GravoMG::Weighting::BARYCENTRIC
     );
     fmt::print("Produced a prolongation operator: {}x{}\n", U.rows(), U.cols());
 
