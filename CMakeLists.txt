@@ -4,6 +4,8 @@ project(gravomg)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(GRAVOMG_BUILD_TEST "Build gravomg test program" OFF)
+
 include(FetchContent)
 
 # Eigen
@@ -54,5 +56,7 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "a
     target_compile_options(gravomg PRIVATE $<$<CXX_COMPILER_ID:GNU>:-fPIC>)
 endif ()
 
-add_subdirectory(test)
+if (GRAVOMG_BUILD_TEST)
+    add_subdirectory(test)
+endif ()
 
