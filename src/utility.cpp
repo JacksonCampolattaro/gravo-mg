@@ -47,45 +47,14 @@ namespace GravoMG {
         maxVal = length.maxCoeff();
     }
 
-    NeighborMatrix toHomogenous(const NeighborList& edges) {
-        // Convert the set-based neighbor list to a standard homogenuous table
 
-        // Prepare a matrix with room for the largest edge set
-        const auto max_num_neighbors = std::transform_reduce(
-                                           edges.begin(), edges.end(),
-                                           std::size_t{0},
-                                           [](const auto& a, const auto& b) { return std::max(a, b); },
-                                           [](const auto& set) { return set.size(); }
-                                       ) + 1;
-        NeighborMatrix edge_matrix{edges.size(), max_num_neighbors};
+    NeighborList extractEdges(const EdgeMatrix& matrix) {
+        NeighborList neighbors{matrix.nonZeros(), 2};
+        Index n = 0;
+        for (Index i = 0; i < matrix.outerSize(); ++i)
+            for (Eigen::SparseMatrix<double>::InnerIterator it(matrix, i); it; ++it)
+                neighbors.row(n++) = Eigen::RowVector2i{it.col(), it.row()};
 
-        // Unused slots are set to -1
-        edge_matrix.setConstant(-1);
-
-        // Set edges row by row
-        for (Index i = 0; i < edge_matrix.rows(); ++i) {
-            // Add self-connection in the first position
-            edge_matrix(i, 0) = i;
-
-            // Add all connections from the set
-            Index j{1};
-            for (const auto neighbor: edges[i]) {
-                if (neighbor == i) continue;
-                edge_matrix(i, j++) = neighbor;
-            }
-        }
-
-        return edge_matrix;
-    }
-
-
-    NeighborList extractEdges(const Eigen::SparseMatrix<double>& matrix) {
-        NeighborList neighbors(matrix.rows());
-        for (Index i = 0; i < matrix.outerSize(); ++i) {
-            for (Eigen::SparseMatrix<double>::InnerIterator it(matrix, i); it; ++it) {
-                neighbors[it.row()].insert(it.col());
-            }
-        }
         return neighbors;
     }
 

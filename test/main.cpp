@@ -20,33 +20,10 @@
 #include <gravomg/sampling.h>
 
 static constexpr int NUM_POINTS = 5000;
-static constexpr double REDUCTION_RATIO = 1; // todo: this doesn't seem reasonable
+static constexpr double REDUCTION_RATIO = 2.0; // todo: this doesn't seem reasonable
 static constexpr int K = 32;
 
 using Eigen::Index;
-
-std::vector<std::array<Eigen::Index, 2>> toEdgePairs(
-    const std::span<Eigen::Index> indices,
-    const std::function<Index(Index)>& transformation = std::identity{}
-) {
-    std::vector<std::array<Eigen::Index, 2>> pairs;
-    for (Eigen::Index i = 0; i < indices.size(); ++i)
-        pairs.push_back({i, transformation(indices[i])});
-    return pairs;
-}
-
-std::vector<std::array<Index, 2>> toEdgePairs(
-    const GravoMG::NeighborList& edges,
-    const std::function<Index(Index)>& transformation = std::identity{}
-) {
-    std::vector<std::array<Index, 2>> pairs;
-    for (Index i = 0; i < edges.size(); ++i) {
-        for (const Index j: edges[i]) {
-            pairs.push_back({transformation(i), transformation(j)});
-        }
-    }
-    return pairs;
-}
 
 std::vector<std::array<Index, 2>> toEdgePairs(
     const GravoMG::NeighborMatrix& edges,
@@ -58,6 +35,16 @@ std::vector<std::array<Index, 2>> toEdgePairs(
             if (j >= 0) pairs.push_back({transformation(i), transformation(j)});
         }
     }
+    return pairs;
+}
+
+std::vector<std::array<Index, 2>> toEdgePairs(
+    const GravoMG::EdgeMatrix& edges
+) {
+    std::vector<std::array<Index, 2>> pairs;
+    for (Index i = 0; i < edges.outerSize(); ++i)
+        for (Eigen::SparseMatrix<double>::InnerIterator it(edges, i); it; ++it)
+            pairs.push_back({it.col(), it.row()});
     return pairs;
 }
 
@@ -99,38 +86,38 @@ int main() {
     fmt::print("Sampled point cloud: {}x{}\n", fine_points.rows(), fine_points.cols());
 
     // Find KNN for the point cloud
-    const auto [stiffness, M] = buildPointCloudLaplacian(fine_points, 1e-5, K);
-    const auto fine_edges = GravoMG::extractEdges(stiffness);
-    const auto fine_edges_homogenous = GravoMG::toHomogenous(fine_edges);
-    fmt::print("Produced neighbor table: {}x{}\n", fine_edges_homogenous.rows(), fine_edges_homogenous.cols());
+    const auto [fine_edge_matrix, M] = buildPointCloudLaplacian(fine_points, 1e-5, K);
+    const auto fine_edges = GravoMG::extractEdges(fine_edge_matrix);
+    const auto coo_fine_edges = GravoMG::extractEdges(fine_edge_matrix);
+    fmt::print("Produced edge matrix: {}x{}\n", fine_edge_matrix.rows(), fine_edge_matrix.cols());
 
     // Select coarse point hints
-    const auto radius = std::cbrt(REDUCTION_RATIO) * GravoMG::averageEdgeLength(fine_points, fine_edges);
+    const auto radius = std::cbrt(REDUCTION_RATIO) * GravoMG::averageEdgeLength(fine_points, coo_fine_edges);
     fmt::print("Selected radius for fast disc sampling: {}\n", radius);
-    const auto coarse_point_recommendations = GravoMG::fastDiscSample(fine_points, fine_edges_homogenous, radius);
+    const auto coarse_point_recommendations = GravoMG::fastDiscSampleCOO(fine_points, fine_edge_matrix, radius);
     fmt::print("Selected coarse points using fast disc sampling: {}\n", coarse_point_recommendations.size());
 
     // Associate all fine points with their coarse parent
     auto fine_to_nearest_coarse = GravoMG::assignParents(
         fine_points,
-        fine_edges,
+        fine_edge_matrix,
         coarse_point_recommendations
     );
     fmt::print("Associated each fine point with a coarse \"parent\"\n");
 
     // Produce a coarse edge graph from the fine one
-    auto coarse_edges = GravoMG::extractCoarseEdges(
+    auto coarse_edge_matrix = GravoMG::extractCoarseEdges(
         fine_points,
-        fine_edges,
+        fine_edge_matrix,
         coarse_point_recommendations,
         fine_to_nearest_coarse
     );
-    const auto coarse_edge_pairs = toEdgePairs(coarse_edges);
+    fmt::print("Found {} coarse edges based on associated fine edges\n", coarse_edge_matrix.nonZeros());
 
     // Improve the locations of the coarse points
     auto coarse_points = GravoMG::coarseFromMeanOfFineChildren(
         fine_points,
-        fine_edges,
+        fine_edge_matrix,
         fine_to_nearest_coarse,
         coarse_point_recommendations.size()
     );
@@ -139,7 +126,7 @@ int main() {
     // Produce voronoi triangles for the coarse points
     auto [triangles_with_normals, point_triangle_associations] = GravoMG::constructVoronoiTriangles(
         coarse_points,
-        coarse_edges
+        coarse_edge_matrix
     );
     fmt::print("Constructed voronoi triangles from the coarse points\n");
 
@@ -147,7 +134,7 @@ int main() {
     auto U = GravoMG::constructProlongation(
         fine_points,
         coarse_points,
-        coarse_edges,
+        coarse_edge_matrix,
         fine_to_nearest_coarse,
         GravoMG::Weighting::BARYCENTRIC
     );
@@ -191,17 +178,23 @@ int main() {
     // Show results
     polyscope::init();
     polyscope::registerPointCloud("fine-points", fine_points)
-            ->setPointRadius(0.0015);
-    polyscope::registerPointCloud("projected-fine-points", fine_points_projected)
-            ->setPointRadius(0.0015);
-    polyscope::registerCurveNetwork("projections", points_with_projections, projection_edges);
+            ->setPointRadius(0.0025)
+            ->setEnabled(true);
     polyscope::registerPointCloud("coarse-points", coarse_points)
-            ->setPointRadius(0.005);
-    polyscope::registerCurveNetwork("coarse-coarse", coarse_points, coarse_edge_pairs);
+            ->setPointRadius(0.005)
+            ->setEnabled(true);
+    polyscope::registerPointCloud("projected-fine-points", fine_points_projected)
+            ->setPointRadius(0.0015)
+            ->setEnabled(false);
+    polyscope::registerCurveNetwork("projections", points_with_projections, projection_edges)
+            ->setEnabled(false);
+    polyscope::registerCurveNetwork("coarse-coarse", coarse_points, toEdgePairs(coarse_edge_matrix))
+            ->setEnabled(false);
     polyscope::registerCurveNetwork("fine-coarse", multilevel_point_cloud, edges)
             ->setRadius(0.0025)
-            ->addEdgeScalarQuantity("weights", weights)->setEnabled(true);
-    polyscope::registerSimpleTriangleMesh("triangles", coarse_points, toFaces(triangles_with_normals));
+            ->addEdgeScalarQuantity("weights", weights);
+    polyscope::registerSimpleTriangleMesh("triangles", coarse_points, toFaces(triangles_with_normals))
+            ->setEnabled(false);
     polyscope::show();
 
     return 0;
