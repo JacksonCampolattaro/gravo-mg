@@ -16,8 +16,8 @@ namespace GravoMG {
     };
 
     double inTriangle(
-        const Eigen::RowVector3d& p, std::span<Index, 3> tri,
-        const Eigen::RowVector3d& triNormal, const Eigen::MatrixXd& pos,
+        const Point& p, std::span<Index, 3> tri,
+        const Normal& triNormal, const PointMatrix& pos,
         Eigen::RowVector3d& bary, std::map<Index, float>& insideEdge
     );
 
@@ -33,7 +33,7 @@ namespace GravoMG {
         const std::vector<Index>& coarse_samples
     );
 
-    double averageEdgeLength(const PointMatrix& positions, const NeighborList& neighbors);
+    double averageEdgeLength(const PointMatrix& positions, const EdgeList& neighbors);
 
     Eigen::SparseMatrix<double> extractCoarseEdges(
         const PointMatrix& fine_points,

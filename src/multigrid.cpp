@@ -2,19 +2,21 @@
 #include "gravomg/utility.h"
 #include "gravomg/sampling.h"
 
+#include <Eigen/Dense>
+
 #include <cmath>
 #include <numeric>
 #include <chrono>
 
-#include <Eigen/Dense>
 #include <utility>
+#include <set>
 
 namespace GravoMG {
 
     using VertexWithDistance = std::pair<double, Index>;
 
-    double inTriangle(const Eigen::RowVector3d& p, std::span<Index, 3> tri,
-                      const Eigen::RowVector3d& triNormal, const Eigen::MatrixXd& pos,
+    double inTriangle(const Point& p, std::span<Index, 3> tri,
+                      const Normal& triNormal, const PointMatrix& pos,
                       Eigen::RowVector3d& bary, std::map<Index, float>& insideEdge) {
         Eigen::RowVector3d v1, v2, v3;
         v1 = pos.row(tri[0]);
@@ -122,7 +124,7 @@ namespace GravoMG {
         return parents;
     }
 
-    double averageEdgeLength(const PointMatrix& positions, const NeighborList& neighbors) {
+    double averageEdgeLength(const PointMatrix& positions, const EdgeList& neighbors) {
         const auto& rows = neighbors.rowwise();
         return std::transform_reduce(rows.begin(), rows.end(), 0.0, std::plus<>{}, [&](const auto& row) {
             auto [i, j] = std::make_tuple(row[0], row[1]);

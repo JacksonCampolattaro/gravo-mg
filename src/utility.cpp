@@ -48,8 +48,8 @@ namespace GravoMG {
     }
 
 
-    NeighborList extractEdges(const EdgeMatrix& matrix) {
-        NeighborList neighbors{matrix.nonZeros(), 2};
+    EdgeList extractEdges(const EdgeMatrix& matrix) {
+        EdgeList neighbors{matrix.nonZeros(), 2};
         Index n = 0;
         for (Index i = 0; i < matrix.outerSize(); ++i)
             for (Eigen::SparseMatrix<double>::InnerIterator it(matrix, i); it; ++it)

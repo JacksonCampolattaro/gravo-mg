@@ -26,19 +26,6 @@ static constexpr int K = 32;
 using Eigen::Index;
 
 std::vector<std::array<Index, 2>> toEdgePairs(
-    const GravoMG::NeighborMatrix& edges,
-    const std::function<Index(Index)>& transformation = std::identity{}
-) {
-    std::vector<std::array<Index, 2>> pairs;
-    for (Index i = 0; i < edges.rows(); ++i) {
-        for (const Index j: edges.row(i)) {
-            if (j >= 0) pairs.push_back({transformation(i), transformation(j)});
-        }
-    }
-    return pairs;
-}
-
-std::vector<std::array<Index, 2>> toEdgePairs(
     const GravoMG::EdgeMatrix& edges
 ) {
     std::vector<std::array<Index, 2>> pairs;
@@ -48,20 +35,11 @@ std::vector<std::array<Index, 2>> toEdgePairs(
     return pairs;
 }
 
-std::set<GravoMG::Triangle> toFaces(const std::vector<GravoMG::TriangleWithNormal>& triangles_with_normals) {
-    std::set<GravoMG::Triangle> triangles;
-    for (auto& [triangle, normal]: triangles_with_normals) {
-        auto [a, b, c] = triangle;
-        // todo: this is silly
-        if (!triangles.contains({a, b, c}) &&
-            !triangles.contains({b, c, a}) &&
-            !triangles.contains({c, a, b})) {
-            // Insert a version of the triangle with both normals
-            triangles.insert({a, b, c});
-            triangles.insert({a, c, b});
-        }
-
-
+std::vector<GravoMG::Triangle> toFaces(const std::vector<GravoMG::TriangleWithNormal>& triangles_with_normals) {
+    std::vector<GravoMG::Triangle> triangles;
+    for (auto& [a, b, c]: triangles_with_normals | std::views::keys) {
+        triangles.push_back({a, b, c});
+        triangles.push_back({a, c, b});
     }
     return triangles;
 }
@@ -87,14 +65,15 @@ int main() {
 
     // Find KNN for the point cloud
     const auto [fine_edge_matrix, M] = buildPointCloudLaplacian(fine_points, 1e-5, K);
-    const auto fine_edges = GravoMG::extractEdges(fine_edge_matrix);
-    const auto coo_fine_edges = GravoMG::extractEdges(fine_edge_matrix);
+    // const auto fine_edges = GravoMG::extractEdges(fine_edge_matrix);
+    // const auto coo_fine_edges = GravoMG::extractEdges(fine_edge_matrix);
     fmt::print("Produced edge matrix: {}x{}\n", fine_edge_matrix.rows(), fine_edge_matrix.cols());
 
     // Select coarse point hints
-    const auto radius = std::cbrt(REDUCTION_RATIO) * GravoMG::averageEdgeLength(fine_points, coo_fine_edges);
+    const auto radius = std::cbrt(REDUCTION_RATIO) * GravoMG::averageEdgeLength(
+                            fine_points, GravoMG::extractEdges(fine_edge_matrix));
     fmt::print("Selected radius for fast disc sampling: {}\n", radius);
-    const auto coarse_point_recommendations = GravoMG::fastDiscSampleCOO(fine_points, fine_edge_matrix, radius);
+    const auto coarse_point_recommendations = GravoMG::fastDiscSample(fine_points, fine_edge_matrix, radius);
     fmt::print("Selected coarse points using fast disc sampling: {}\n", coarse_point_recommendations.size());
 
     // Associate all fine points with their coarse parent

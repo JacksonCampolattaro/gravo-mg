@@ -11,19 +11,7 @@ namespace GravoMG {
 
     using Eigen::Index;
 
-    std::vector<size_t> maximumDeltaIndependentSet(
-        const Eigen::MatrixXd& pos, const Eigen::MatrixXi& edges, const double& radius
-    );
-
-    std::vector<Index> maximumDeltaIndependentSetWithDistances(
-        const Eigen::MatrixXd& pos, const NeighborMatrix& edges,
-        const double& radius,
-        Eigen::VectorXd& D, std::vector<Index>& nearestSourceK
-    );
-
-    std::vector<Index> fastDiscSample(const Eigen::MatrixXd& pos, const NeighborMatrix& edges, const double& radius);
-
-    std::vector<Index> fastDiscSampleCOO(
+    std::vector<Index> fastDiscSample(
         const Eigen::MatrixXd& pos,
         const Eigen::SparseMatrix<double>& edge_matrix,
         const double& radius
