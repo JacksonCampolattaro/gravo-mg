@@ -17,14 +17,16 @@ namespace GravoMG {
     using TriangleWithNormal = std::pair<Triangle, Normal>;
     using ProlongationOperator = Eigen::SparseMatrix<double, Eigen::RowMajor>;
 
-    void scaleMesh(Eigen::MatrixXd& V, const Eigen::MatrixXi& F, double scaleRatio = 1.0);
+    void scaleMesh(Eigen::MatrixXd &V, const Eigen::MatrixXi &F, double scaleRatio = 1.0);
 
-    EdgeList extractEdges(const EdgeMatrix& matrix);
+    EdgeMatrix toEdgeDistanceMatrix(const EdgeMatrix &matrix, const PointMatrix &points);
+
+    std::pair<EdgeList, Eigen::VectorXd> extractEdges(const EdgeMatrix &matrix);
 
     // todo: someday I'd like a nicer way of iterating over the sparse matrix
     struct SparseInnerEnd {
         template<typename Derived>
-        bool operator==(const typename Eigen::SparseCompressedBase<Derived>::InnerIterator& iter) const {
+        bool operator==(const typename Eigen::SparseCompressedBase<Derived>::InnerIterator &iter) const {
             return !iter;
         }
     };

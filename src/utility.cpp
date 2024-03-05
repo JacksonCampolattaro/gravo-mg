@@ -5,7 +5,7 @@
 
 namespace GravoMG {
 
-    void scaleMesh(Eigen::MatrixXd& V, const Eigen::MatrixXi& F, double scaleRatio) {
+    void scaleMesh(Eigen::MatrixXd &V, const Eigen::MatrixXi &F, double scaleRatio) {
         Eigen::Vector3d minV;
         Eigen::Vector3d maxV;
         Eigen::Vector3d length;
@@ -47,15 +47,27 @@ namespace GravoMG {
         maxVal = length.maxCoeff();
     }
 
-
-    EdgeList extractEdges(const EdgeMatrix& matrix) {
-        EdgeList neighbors{matrix.nonZeros(), 2};
-        Index n = 0;
+    EdgeMatrix toEdgeDistanceMatrix(const EdgeMatrix &matrix, const PointMatrix &points) {
+        auto distance_matrix = matrix;
         for (Index i = 0; i < matrix.outerSize(); ++i)
             for (Eigen::SparseMatrix<double>::InnerIterator it(matrix, i); it; ++it)
-                neighbors.row(n++) = Eigen::RowVector2i{it.col(), it.row()};
+                distance_matrix.coeffRef(it.row(), it.col()) = (points.row(it.row()) - points.row(it.col())).norm();
+        return distance_matrix;
+    }
 
-        return neighbors;
+    std::pair<EdgeList, Eigen::VectorXd> extractEdges(const EdgeMatrix &matrix) {
+        EdgeList neighbors{matrix.nonZeros(), 2};
+        Eigen::VectorXd values{matrix.nonZeros()};
+        // todo: this could probably be reduced to a bulk memory copy
+        Index n = 0;
+        for (Index i = 0; i < matrix.outerSize(); ++i)
+            for (Eigen::SparseMatrix<double>::InnerIterator it(matrix, i); it; ++it) {
+                values[n] = it.value();
+                neighbors.row(n) = Eigen::RowVector2i{it.col(), it.row()};
+                n++;
+            }
+
+        return {neighbors, values};
     }
 
 }

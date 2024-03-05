@@ -15,9 +15,9 @@ namespace GravoMG {
 
     using VertexWithDistance = std::pair<double, Index>;
 
-    double inTriangle(const Point& p, std::span<Index, 3> tri,
-                      const Normal& triNormal, const PointMatrix& pos,
-                      Eigen::RowVector3d& bary, std::map<Index, float>& insideEdge) {
+    double inTriangle(const Point &p, std::span<Index, 3> tri,
+                      const Normal &triNormal, const PointMatrix &pos,
+                      Eigen::RowVector3d &bary, std::map<Index, float> &insideEdge) {
         Eigen::RowVector3d v1, v2, v3;
         v1 = pos.row(tri[0]);
         v2 = pos.row(tri[1]);
@@ -54,14 +54,14 @@ namespace GravoMG {
         return -1.;
     }
 
-    std::vector<double> uniformWeights(const int& n_points) {
+    std::vector<double> uniformWeights(const int &n_points) {
         std::vector<double> weights(n_points);
         std::fill(weights.begin(), weights.end(), 1. / n_points);
         return weights;
     }
 
-    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd& pos, const Eigen::RowVector3d& p,
-                                               const std::span<Index>& edges) {
+    std::vector<double> inverseDistanceWeights(const Eigen::MatrixXd &pos, const Eigen::RowVector3d &p,
+                                               const std::span<Index> &edges) {
         double sumWeight = 0.;
         std::vector<double> weights(edges.size());
         for (size_t j = 0; j < edges.size(); ++j) {
@@ -75,9 +75,9 @@ namespace GravoMG {
     }
 
     std::vector<Index> assignParents(
-        const Eigen::MatrixXd& fine_points,
-        const EdgeMatrix& fine_edge_matrix,
-        const std::vector<Index>& coarse_samples
+            const Eigen::MatrixXd &fine_points,
+            const EdgeMatrix &fine_edge_matrix,
+            const std::vector<Index> &coarse_samples
     ) {
         std::vector<Index> parents(fine_points.rows());
         Eigen::VectorXd parent_distances(fine_points.rows());
@@ -124,19 +124,19 @@ namespace GravoMG {
         return parents;
     }
 
-    double averageEdgeLength(const PointMatrix& positions, const EdgeList& neighbors) {
-        const auto& rows = neighbors.rowwise();
-        return std::transform_reduce(rows.begin(), rows.end(), 0.0, std::plus<>{}, [&](const auto& row) {
+    double averageEdgeLength(const PointMatrix &positions, const EdgeList &neighbors) {
+        const auto &rows = neighbors.rowwise();
+        return std::transform_reduce(rows.begin(), rows.end(), 0.0, std::plus<>{}, [&](const auto &row) {
             auto [i, j] = std::make_tuple(row[0], row[1]);
             return (positions.row(j) - positions.row(i)).norm();
         }) / double(neighbors.rows() - positions.rows()); // Self connections are not included in the average
     }
 
     Eigen::SparseMatrix<double> extractCoarseEdges(
-        const PointMatrix& fine_points,
-        const EdgeMatrix& fine_edge_matrix,
-        const std::vector<Index>& coarse_samples,
-        const std::vector<Index>& fine_to_nearest_coarse
+            const PointMatrix &fine_points,
+            const EdgeMatrix &fine_edge_matrix,
+            const std::vector<Index> &coarse_samples,
+            const std::vector<Index> &fine_to_nearest_coarse
     ) {
         Eigen::SparseMatrix<double> coarse_edge_matrix{Index(coarse_samples.size()), Index(coarse_samples.size())};
         for (Index fine = 0; fine < fine_points.rows(); ++fine) {
@@ -145,18 +145,34 @@ namespace GravoMG {
                 const auto neighbor_parent = fine_to_nearest_coarse[it.index()];
 
                 // If the two points belong to different parent points, add a connection between the parents
-                if (parent != neighbor_parent)
-                    coarse_edge_matrix.coeffRef(parent, neighbor_parent) = 1.0;
+                if (parent != neighbor_parent) {
+                    // The distance through this point is given by the sum of distances to either coarse point
+                    const auto distance_through_this_point =
+                            fine_edge_matrix.coeff(fine, parent) + it.value();
+//                            fine_edge_matrix.coeff(fine, parent) + fine_edge_matrix.coeff(fine, neighbor_parent);
+//                            (fine_points.row(parent) - fine_points.row(fine)).norm() +
+//                            (fine_points.row(neighbor_parent) - fine_points.row(fine)).norm();
+                    // Set the coarse distance to the shortest path through any of the child connections
+                    if (coarse_edge_matrix.coeff(parent, neighbor_parent) == 0)
+                        // Make sure not to leave a value of zero
+                        // this step wouldn't be necessary with an empty value of inf!
+                        coarse_edge_matrix.coeffRef(parent, neighbor_parent) = distance_through_this_point;
+                    else
+                        coarse_edge_matrix.coeffRef(parent, neighbor_parent) = std::min(
+                                coarse_edge_matrix.coeff(parent, neighbor_parent),
+                                distance_through_this_point
+                        );
+                }
             }
         }
         return coarse_edge_matrix;
     }
 
     PointMatrix coarseFromMeanOfFineChildren(
-        const PointMatrix& fine_points,
-        const EdgeMatrix& fine_edge_matrix,
-        const std::vector<Index>& fine_to_nearest_coarse,
-        std::size_t num_coarse_points
+            const PointMatrix &fine_points,
+            const EdgeMatrix &fine_edge_matrix,
+            const std::vector<Index> &fine_to_nearest_coarse,
+            std::size_t num_coarse_points
     ) {
 
         // Find the children associated with each coarse point
@@ -166,9 +182,9 @@ namespace GravoMG {
 
         // "Lonely" coarse points get children based on their nearest neighbors
         // todo: is this actually helpful?
-        for (auto& child_set: associated_children)
+        for (auto &child_set: associated_children)
             if (child_set.size() == 1) {
-                const auto& child = *child_set.begin();
+                const auto &child = *child_set.begin();
                 for (Eigen::SparseMatrix<double>::InnerIterator it(fine_edge_matrix, child); it; ++it) {
                     child_set.insert(it.index());
                 }
@@ -177,22 +193,22 @@ namespace GravoMG {
         // Produce coarse points by averaging the associated children
         PointMatrix coarse_points{num_coarse_points, fine_points.cols()};
         for (Index coarse = 0; coarse < coarse_points.rows(); coarse++) {
-            const auto& children = associated_children[coarse];
+            const auto &children = associated_children[coarse];
             auto r = coarse_points.row(coarse);
             coarse_points.row(coarse) = std::transform_reduce(
-                                            children.begin(), children.end(),
-                                            Point{0.0, 0.0, 0.0},
-                                            std::plus{},
-                                            [&](auto fine) { return fine_points.row(fine); }
-                                        ) / children.size();
+                    children.begin(), children.end(),
+                    Point{0.0, 0.0, 0.0},
+                    std::plus{},
+                    [&](auto fine) { return fine_points.row(fine); }
+            ) / children.size();
         }
 
         return coarse_points;
     }
 
     std::pair<std::vector<TriangleWithNormal>, std::vector<std::vector<size_t>>> constructVoronoiTriangles(
-        const PointMatrix& points,
-        const EdgeMatrix& edge_matrix
+            const PointMatrix &points,
+            const EdgeMatrix &edge_matrix
     ) {
 
         std::vector<std::pair<Triangle, Eigen::RowVector3d>> triangles_with_normals{};
@@ -227,8 +243,8 @@ namespace GravoMG {
 
                         // Add the triangle
                         triangles_with_normals.emplace_back(
-                            Triangle{vertex_0, vertex_1, vertex_2},
-                            normal
+                                Triangle{vertex_0, vertex_1, vertex_2},
+                                normal
                         );
 
                         // Triangle ID is equivalent to its location in the list
@@ -247,15 +263,15 @@ namespace GravoMG {
     }
 
     ProlongationOperator constructProlongation(
-        const PointMatrix& fine_points, const PointMatrix& coarse_points,
-        const EdgeMatrix& coarse_edge_matrix,
-        const std::vector<Index>& fine_to_nearest_coarse,
-        Weighting weighting_scheme
+            const PointMatrix &fine_points, const PointMatrix &coarse_points,
+            const EdgeMatrix &coarse_edge_matrix,
+            const std::vector<Index> &fine_to_nearest_coarse,
+            Weighting weighting_scheme
     ) {
 
         auto [triangles_with_normals, point_triangle_associations] = constructVoronoiTriangles(
-            coarse_points,
-            coarse_edge_matrix
+                coarse_points,
+                coarse_edge_matrix
         );
 
         // List of triplets to build prolongation operator U
@@ -346,9 +362,9 @@ namespace GravoMG {
                     // If the triangle contains the point, the distance is positive, else it's negative
                     Eigen::RowVector3d barycenter = {0., 0., 0.};
                     double distance_to_triangle = inTriangle(
-                        fine_point, triangle,
-                        triangle_normal, coarse_points,
-                        barycenter, distances_to_edges
+                            fine_point, triangle,
+                            triangle_normal, coarse_points,
+                            barycenter, distances_to_edges
                     );
                     // std::cout << "\t{" << triangle[0] << ", " << triangle[1] << ", " << triangle[2] << "} "
                     //         << "--> " << distance_to_triangle << std::endl;
@@ -395,7 +411,7 @@ namespace GravoMG {
                     bool found_edge = false;
                     double distance_to_chosen_edge = std::numeric_limits<double>::max();
                     Index chosen_edge = 0;
-                    for (const auto& [edge, distance]: distances_to_edges) {
+                    for (const auto &[edge, distance]: distances_to_edges) {
                         if (distance >= 0. && distance < distance_to_chosen_edge) {
                             found_edge = true;
                             distance_to_chosen_edge = distance;
@@ -469,7 +485,7 @@ namespace GravoMG {
                 }
             }
         }
-        assert((float)fallbackCount / fine_points.rows() < 0.5);
+        assert((float) fallbackCount / fine_points.rows() < 0.5);
         // std::cout << "Percentage of fallback: " << (double)fallbackCount / (double)fine_points.rows() * 100 <<
         //         std::endl;
 
@@ -481,7 +497,7 @@ namespace GravoMG {
         return U;
     }
 
-    PointMatrix projectedPoints(const ProlongationOperator& weights, const PointMatrix& coarse_points) {
+    PointMatrix projectedPoints(const ProlongationOperator &weights, const PointMatrix &coarse_points) {
         PointMatrix projected_fine_points(weights.rows(), coarse_points.cols());
         projected_fine_points.setConstant(0.0);
         for (Index fine = 0; fine < weights.outerSize(); ++fine) {
